@@ -235,8 +235,13 @@ func _spawn_player() -> void:
 	add_child(player)
 	player.set_physics_process(true)
 	player.set_input_source(touch_controls)
-	spawn_position = _free_spawn_position(spawn_position)
+	# Проверку свободного места делает сам контроллер на первом шаге физики:
+	# запрос физического пространства вне физического кадра движок помечает
+	# как ERROR, а игра из-за этого выглядит сломанной в логе.
+	if Engine.is_in_physics_frame():
+		spawn_position = _free_spawn_position(spawn_position)
 	player.global_position = spawn_position
+	player.request_free_placement()
 	player.rotation = Vector3(0.0, yaw, 0.0)
 	var roads := world.road_network()
 	# The controller asks the provider for the surface under a point as

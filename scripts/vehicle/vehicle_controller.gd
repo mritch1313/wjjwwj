@@ -89,6 +89,9 @@ var _recovering: bool = false
 ## Кадры после подъёма кнопкой «Y»: в полёте гасим вращение, чтобы машина
 ## возвращалась на колёса, а не падала на крышу.
 var _lift_grace_frames: int = 0
+## Запрос «подними машину из геометрии»: физическое пространство доступно
+## только внутри физического кадра, поэтому проверка откладывается на него.
+var _pending_free_placement: bool = false
 var _visual_scene_path: String = ""
 
 
@@ -171,6 +174,9 @@ func vehicle_input() -> VehicleInput:
 
 ## ------------------------------------------------------------------- physics
 func _physics_process(delta: float) -> void:
+	if _pending_free_placement:
+		_pending_free_placement = false
+		_settle_onto_free_ground()
 	if _lift_grace_frames > 0:
 		_lift_grace_frames -= 1
 		# Машина висит после подъёма: без гашения угловой скорости она
@@ -594,11 +600,11 @@ func reset_car(onto_road: bool = true) -> void:
 	# полотна и даём подвеске осесть (высоты старой системы координат здесь
 	# означали бы падение с высоты более метра).
 	target.y += config.ground_clearance_m + 0.3
-	# Свободное место: если точка занята геометрией (дом, столб, дерево), машина
-	# раньше появлялась внутри объекта и её выбрасывало.  Теперь корпус
-	# поднимается над ближайшим препятствием.
-	target = _free_placement(target)
 	global_transform = Transform3D(Basis(Vector3.UP, yaw), target)
+	# Свободное место проверяется на ближайшем шаге физики: если точка занята
+	# геометрией (дом, столб, дерево), корпус поднимается над препятствием, а не
+	# появляется внутри него.
+	_pending_free_placement = true
 	linear_velocity = Vector3.ZERO
 	angular_velocity = Vector3.ZERO
 	throttle_smoothed = 0.0
@@ -642,6 +648,28 @@ func lift_up(meters: float) -> void:
 	linear_velocity = Vector3(linear_velocity.x, 0.0, linear_velocity.z)
 	angular_velocity = Vector3.ZERO
 	_lift_grace_frames = LIFT_GRACE_FRAMES
+
+
+## Просьба проверить свободное место и подняться над геометрией.  Вызывается
+## из игры (спавн, возврат на дорогу) - сам запрос выполняется в физическом
+## кадре, где состояние пространства доступно без ошибок.
+func request_free_placement() -> void:
+	_pending_free_placement = true
+
+
+## Поднимает корпус над ближайшим препятствием.  Вызывается только из
+## _physics_process: вне физического кадра запрос пространства даёт ERROR.
+func _settle_onto_free_ground() -> void:
+	var free := _free_placement(global_position)
+	if free.y <= global_position.y + 0.01:
+		return
+	var forward := forward_direction()
+	var yaw := 0.0
+	if forward.length_squared() > 0.0001:
+		yaw = atan2(forward.x, forward.z)
+	global_transform = Transform3D(Basis(Vector3.UP, yaw), free)
+	linear_velocity = Vector3(linear_velocity.x, 0.0, linear_velocity.z)
+	angular_velocity = Vector3.ZERO
 
 
 ## Ищет свободное место над точкой: корпус машины (1.9 x 1.1 x 4.6) проверяется
