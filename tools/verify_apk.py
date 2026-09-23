@@ -132,7 +132,12 @@ def parse_axml(data: bytes) -> dict:
                 attrs[attr_name] = (data_type, attr_data)
             result["elements"].append(element)
             if element == "manifest":
-                result["package"] = pool.get(struct.unpack_from("<I", data, offset + 16)[0])
+                # Имя пакета - строковый атрибут package (type 0x03 = ссылка на пул
+                # строк).  Раньше здесь читалось поле ns заголовка элемента, то
+                # есть 0xFFFFFFFF, и проверка пакета всегда падала на настоящем
+                # манифесте.
+                if "package" in attrs:
+                    result["package"] = pool.get(attrs["package"][1])
                 if "versionCode" in attrs:
                     result["version_code"] = attrs["versionCode"][1]
                 if "versionName" in attrs:
@@ -160,6 +165,16 @@ def find_aapt2() -> str | None:
     return None
 
 
+def aapt2_int(line: str) -> int | None:
+    """Достаёт значение атрибута из строки `aapt2 dump xmltree`.
+
+    Значения бывают трёх видов: `(type 0x10)0x1`, простая строка вида `0x1` и
+    имя константы (`portrait`).  Поэтому берётся последнее число в строке.
+    """
+    numbers = re.findall(r"0x[0-9a-fA-F]+|\b\d+\b", line)
+    return int(numbers[-1], 0) if numbers else None
+
+
 def manifest_via_aapt2(aapt2: str, apk: Path) -> dict:
     """Читает манифест через `aapt2 dump xmltree` (та же информация, что в AXML)."""
     out = subprocess.run(
@@ -170,18 +185,23 @@ def manifest_via_aapt2(aapt2: str, apk: Path) -> dict:
         raise RuntimeError(out.stderr.strip() or "aapt2 не смог прочитать манифест")
     result: dict = {"package": "", "version_code": None, "version_name": None,
                     "orientation": None, "permissions": [], "min_sdk": None}
-    for line in out.stdout.splitlines():
-        line = line.strip()
-        if line.startswith("package="):
-            result["package"] = line.split("=", 1)[1].strip().strip('"')
-        elif "android:versionCode" in line:
-            result["version_code"] = int(line.rsplit("=", 1)[1].strip("()"), 0)
+    for raw_line in out.stdout.splitlines():
+        line = raw_line.strip()
+        package_match = re.search(r'package="([^"]+)"', line)
+        if package_match:
+            result["package"] = package_match.group(1)
+            continue
+        if "android:versionCode" in line:
+            result["version_code"] = aapt2_int(line)
         elif "android:versionName" in line:
-            result["version_name"] = line.rsplit("=", 1)[1].strip().strip('"')
+            match = re.search(r'"([^"]*)"', line)
+            result["version_name"] = match.group(1) if match else ""
         elif "android:minSdkVersion" in line:
-            result["min_sdk"] = int(line.rsplit("=", 1)[1].strip("()"), 0)
+            result["min_sdk"] = aapt2_int(line)
         elif "android:screenOrientation" in line:
-            result["orientation"] = int(line.rsplit("=", 1)[1].strip("()"), 0)
+            value = aapt2_int(line)
+            # aapt2 печатает и имя константы, и её числовое значение
+            result["orientation"] = ORIENTATION_PORTRAIT if "portrait" in line and value is None else value
         elif line.startswith("E: uses-permission"):
             result["permissions"].append("declared")
     return result
@@ -219,7 +239,7 @@ def selftest() -> int:
 
     strings = ["manifest", "android", "com.test.app", "versionCode", "versionName",
                "1.0", "uses-sdk", "minSdkVersion", "activity", "screenOrientation",
-               "uses-permission", "android.permission.INTERNET", "name"]
+               "uses-permission", "android.permission.INTERNET", "name", "package"]
     pool = bytearray()
     offsets = bytearray()
     for text in strings:
@@ -244,7 +264,13 @@ def selftest() -> int:
         return header + body
 
     chunks = string_pool + b""
-    chunks += start_element(0, [(3, 0x10, 1), (4, 0x03, 5)])  # manifest versionCode/Name
+    # Карта ресурсов и старт пространства имён: они есть в настоящем манифесте
+    # aapt2, и разборщик обязан их пропускать.
+    chunks += struct.pack("<HHI", 0x0180, 8, 8)  # пустая карта ресурсов
+    chunks += struct.pack("<HHI", 0x0100, 16, 24) + struct.pack("<II", 1, 0)
+    chunks += struct.pack("<II", 1, 0xFFFFFFFF)  # префикс android + uri
+    # manifest: package - строковый атрибут (индекс 2 в пуле строк)
+    chunks += start_element(0, [(13, 0x03, 2), (3, 0x10, 1), (4, 0x03, 5)])
     chunks += struct.pack("<HHI", 0x0103, 16, 16) + struct.pack("<II", 1, 0)
     chunks += start_element(6, [(7, 0x10, 24)])  # uses-sdk
     chunks += struct.pack("<HHI", 0x0103, 16, 16) + struct.pack("<II", 1, 0)
@@ -257,6 +283,7 @@ def selftest() -> int:
     parsed = parse_axml(header + chunks)
     ok = True
     checks = [
+        (parsed["package"] == "com.test.app", "package разобран"),
         (parsed["version_code"] == 1, "versionCode разобран"),
         (parsed["version_name"] == "1.0", "versionName разобран"),
         (parsed["min_sdk"] == 24, "minSdkVersion разобран"),

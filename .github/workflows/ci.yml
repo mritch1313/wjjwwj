@@ -225,7 +225,19 @@ jobs:
             bash tools/build_android.sh release apk
 
       - name: Verify the APK (manifest, ABI, signature)
-        run: python3 tools/verify_apk.py build/android/chase-open-world-release.apk
+        run: |
+          set +e
+          python3 tools/verify_apk.py build/android/chase-open-world-release.apk 2>&1 | tee /tmp/verify-apk.log
+          code=${PIPESTATUS[0]}
+          # Отчёт печатается ещё и аннотациями: логи прогонов бывают недоступны
+          # (в CI они лежат в закрытом для песочницы хранилище), а аннотации
+          # читаются через API — так причина падения видна без выгрузки логов.
+          if [ $code -ne 0 ]; then
+            tail -n 12 /tmp/verify-apk.log | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::$line"
+            done
+          fi
+          exit $code
 
       - name: Upload the APK
         uses: actions/upload-artifact@v4
