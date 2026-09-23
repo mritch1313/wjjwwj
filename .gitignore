@@ -1,0 +1,22 @@
+# Godot 4
+.godot/
+/android/
+export/
+build/
+*.apk
+*.aab
+*.pck
+*.zip
+
+# keep .import sidecar files under version control, ignore the import cache only
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+
+# generated preview artefacts
+tools/world_dump.json
+tools/preview_*.png

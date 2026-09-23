@@ -1,0 +1,317 @@
+class_name MainScene
+extends Node3D
+
+## Root of the game: builds the world, the player car, the camera, the touch
+## controls, the HUD, the menu and the police, then wires them together through
+## the Game autoload.
+##
+## The scene file (scenes/main/main.tscn) is intentionally minimal - everything
+## gameplay related is created here in code, which keeps node paths out of the
+## equation and makes the setup testable head-less.
+##
+## Startup order matters on a phone:
+##   1. renderer settings + environment (cheap),
+##   2. WorldGenerator world data (roads/city/regions) - one long step,
+##   3. streamed chunk warm-up around the player - several smaller steps with a
+##      progress bar, so the player never sees an empty world,
+##   4. everything else (car, camera, HUD, police) and the menu.
+
+const WARMUP_CHUNKS_PER_STEP := 3
+
+var world: WorldStreamer = null
+var player: PlayerCar = null
+var chase_camera: ChaseCamera = null
+var police: PoliceManager = null
+var hud: Hud = null
+var menu: MainMenu = null
+var touch_controls: MobileControls = null
+var sun: DirectionalLight3D = null
+var world_environment: WorldEnvironment = null
+
+var world_ready: bool = false
+var player_start_position: Vector3 = Vector3.ZERO
+
+var _quality: GraphicsQuality = null
+
+
+func _ready() -> void:
+	randomize()
+	_quality = Settings.preset()
+	Settings.apply_renderer_settings()
+	Settings.apply_audio_bus_volumes()
+	_build_environment()
+	_build_interface()
+	_load_world()
+
+
+## -------------------------------------------------------------- environment --
+func _build_environment() -> void:
+	if ResourceLoader.exists("res://data/environment/default_environment.tres"):
+		var environment_resource: Resource = load("res://data/environment/default_environment.tres")
+		if environment_resource is Environment:
+			world_environment = WorldEnvironment.new()
+			world_environment.name = "WorldEnvironment"
+			world_environment.environment = environment_resource
+			add_child(world_environment)
+	sun = DirectionalLight3D.new()
+	sun.name = "Sun"
+	sun.light_energy = 1.12
+	sun.light_color = Color(1.0, 0.96, 0.88)
+	sun.rotation_degrees = Vector3(-46.0, 38.0, 0.0)
+	sun.shadow_enabled = true
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+	sun.directional_shadow_max_distance = 120.0
+	sun.shadow_bias = 0.06
+	sun.shadow_normal_bias = 1.4
+	add_child(sun)
+
+
+func _build_interface() -> void:
+	var ui_layer := CanvasLayer.new()
+	ui_layer.name = "Controls"
+	ui_layer.layer = 5
+	add_child(ui_layer)
+	touch_controls = MobileControls.new()
+	touch_controls.name = "MobileControls"
+	ui_layer.add_child(touch_controls)
+
+	hud = Hud.new()
+	hud.name = "Hud"
+	add_child(hud)
+
+	menu = MainMenu.new()
+	menu.name = "MainMenu"
+	menu.process_mode = Node.PROCESS_MODE_ALWAYS
+	menu.start_pursuit_requested.connect(_on_start_pursuit_requested)
+	menu.free_roam_requested.connect(_on_free_roam_requested)
+	menu.resume_requested.connect(_on_resume_requested)
+	menu.quit_to_free_roam_requested.connect(_on_quit_to_free_roam)
+	menu.quality_changed.connect(_on_quality_changed)
+	menu.paint_changed.connect(_on_paint_changed)
+	add_child(menu)
+
+	touch_controls.pause_requested.connect(_on_pause_requested)
+	touch_controls.camera_mode_requested.connect(_on_camera_mode_requested)
+	touch_controls.reset_requested.connect(_on_reset_requested)
+	hud.pause_requested.connect(_on_pause_requested)
+	hud.pursuit_requested.connect(_on_hud_pursuit_requested)
+	hud.reset_requested.connect(_on_reset_requested)
+	_apply_camera_distance()
+
+
+## ---------------------------------------------------------------- the world --
+func _load_world() -> void:
+	menu.show_loading(true, 0.0)
+	await get_tree().process_frame
+	world = WorldStreamer.new()
+	world.name = "World"
+	add_child(world)
+	world.setup(Config.world)
+	world.apply_quality(_quality)
+	Game.register_world(world)
+	await get_tree().process_frame
+	_spawn_player()
+	await get_tree().process_frame
+	world.set_camera_target(player)
+	await _warmup_world()
+	world_ready = true
+	menu.show_loading(false)
+	menu.show_menu(true)
+	Game.begin_free_roam()
+	Game.toast.emit(L10n.t("world_ready"))
+
+
+func _warmup_world() -> void:
+	var terrain := world.terrain()
+	var spawn_manager := SpawnManager.new(Config.gameplay, terrain, world.road_network())
+	spawn_manager.set_seed(Config.world.seed)
+	var start := spawn_manager.find_player_start(Config.gameplay.player_start_position)
+	player_start_position = start["point"]
+	var total_steps := 10
+	for step in range(total_steps):
+		if world.is_ready_around(player_start_position, world.view_radius * 0.35) and step >= 2:
+			break
+		world.warmup(player_start_position, WARMUP_CHUNKS_PER_STEP)
+		menu.report_loading(float(step + 1) / float(total_steps), world.loaded_chunk_count())
+		await get_tree().process_frame
+
+
+func _spawn_player() -> void:
+	var terrain := world.terrain()
+	var spawn_manager := SpawnManager.new(Config.gameplay, terrain, world.road_network())
+	spawn_manager.set_seed(Config.world.seed)
+	var start := spawn_manager.find_player_start(Config.gameplay.player_start_position)
+	player_start_position = start["point"]
+	var tangent: Vector3 = start.get("tangent", Vector3.FORWARD)
+	var yaw := atan2(tangent.x, tangent.z)
+	var spawn_position := Vector3(
+		player_start_position.x,
+		terrain.height_at(player_start_position.x, player_start_position.z) + Config.gameplay.reset_height_offset,
+		player_start_position.z
+	)
+	player = PlayerCar.new()
+	player.name = "PlayerCar"
+	player.touch_controls_path = ^"../../Controls/MobileControls"
+	add_child(player)
+	player.set_physics_process(true)
+	player.set_input_source(touch_controls)
+	player.global_position = spawn_position
+	player.rotation = Vector3(0.0, yaw, 0.0)
+	var roads := world.road_network()
+	player.set_surface_provider(func(position: Vector3) -> int:
+		var road_surface := roads.road_surface_at(position) if roads != null else -1
+		if road_surface >= 0:
+			return road_surface
+		return terrain.surface_at(position.x, position.z)
+	)
+	player.set_road_provider(func(position: Vector3) -> Vector3:
+		if roads == null:
+			return position
+		var found := roads.nearest_road(position, 90.0)
+		return found.get("point", position)
+	)
+	Game.register_player(player)
+
+	chase_camera = ChaseCamera.new()
+	chase_camera.name = "ChaseCamera"
+	add_child(chase_camera)
+	chase_camera.set_target(player)
+	chase_camera.apply_quality(_quality)
+	Game.register_camera(chase_camera)
+	if chase_camera.camera() != null:
+		chase_camera.camera().current = true
+
+	police = PoliceManager.new()
+	police.name = "Police"
+	add_child(police)
+	police.configure(player, chase_camera.camera(), roads, terrain)
+	Game.register_police_manager(police)
+
+	hud.bind(player, police, roads)
+	Game.register_hud(hud)
+
+
+## ------------------------------------------------------------- game actions --
+func _on_start_pursuit_requested(police_count: int, ai_level: int) -> void:
+	if not world_ready:
+		return
+	get_tree().paused = false
+	Game.start_pursuit(police_count, ai_level)
+
+
+func _on_free_roam_requested() -> void:
+	if not world_ready:
+		return
+	menu.show_menu(false)
+	get_tree().paused = false
+	Game.begin_free_roam()
+
+
+func _on_resume_requested() -> void:
+	menu.show_pause(false)
+	get_tree().paused = false
+
+
+func _on_quit_to_free_roam() -> void:
+	menu.show_pause(false)
+	menu.show_menu(false)
+	get_tree().paused = false
+	Game.back_to_free_roam()
+	if player != null and is_instance_valid(player):
+		player.reset_to_road()
+
+
+func _on_pause_requested() -> void:
+	if not world_ready:
+		return
+	if menu.get_tree().paused:
+		_on_resume_requested()
+		return
+	menu.show_pause(true)
+
+
+func _on_camera_mode_requested() -> void:
+	if chase_camera != null:
+		chase_camera.cycle_mode()
+		Game.toast.emit("Камера: %s" % chase_camera.status().get("mode", "CHASE"))
+
+
+func _on_reset_requested() -> void:
+	if player != null and is_instance_valid(player):
+		player.reset_to_road()
+
+
+func _on_hud_pursuit_requested() -> void:
+	_on_start_pursuit_requested(Settings.police_count, Settings.ai_level)
+
+
+func _on_quality_changed(_index: int) -> void:
+	_quality = Settings.preset()
+	Perf.set_quality_scale(_quality)
+	if world != null:
+		world.apply_quality(_quality)
+	if chase_camera != null:
+		chase_camera.apply_quality(_quality)
+	_apply_lighting_quality()
+
+
+func _apply_camera_distance() -> void:
+	if chase_camera == null:
+		return
+	var factor: float = clampf(Settings.camera_distance_scale, 0.7, 1.6)
+	chase_camera.min_distance = 5.4 * factor
+	chase_camera.max_distance = 11.0 * factor
+	chase_camera.distance = clampf(chase_camera.distance, chase_camera.min_distance, chase_camera.max_distance)
+
+
+func _on_paint_changed(_index: int) -> void:
+	if player != null and is_instance_valid(player):
+		player.paint_override = Settings.player_paint_color()
+		player.rebuild_visual()
+
+
+func _apply_lighting_quality() -> void:
+	if sun == null:
+		return
+	sun.shadow_enabled = _quality.shadows_enabled
+	sun.directional_shadow_max_distance = _quality.shadow_distance_m
+	RenderingServer.directional_shadow_atlas_set_size(_quality.shadow_map_size, true)
+
+
+## --------------------------------------------------------------- input glue --
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("pause"):
+		_on_pause_requested()
+	elif event.is_action_pressed("reset_car"):
+		_on_reset_requested()
+	elif event.is_action_pressed("camera_toggle"):
+		_on_camera_mode_requested()
+	elif event.is_action_pressed("start_chase"):
+		_on_start_pursuit_requested(Settings.police_count, Settings.ai_level)
+	elif event.is_action_pressed("debug_toggle"):
+		hud.set_debug(not hud.show_debug)
+
+
+func _process(_delta: float) -> void:
+	if player == null or not is_instance_valid(player):
+		return
+	if touch_controls != null:
+		var camera_delta: Vector2 = touch_controls.consume_camera_drag()
+		if camera_delta != Vector2.ZERO and chase_camera != null:
+			var sensitivity: float = Settings.camera_sensitivity
+			var invert := -1.0 if Settings.camera_invert_y else 1.0
+			chase_camera.add_orbit(
+				-camera_delta.x * sensitivity * 0.01,
+				camera_delta.y * sensitivity * 0.01 * invert
+			)
+
+
+func status() -> Dictionary:
+	return {
+		"world_ready": world_ready,
+		"quality": _quality.title if _quality != null else "?",
+		"player": player.status() if player != null and is_instance_valid(player) else {},
+		"world": world.stats() if world != null else {},
+		"police": police.status() if police != null else {},
+		"state": Game.state,
+	}
