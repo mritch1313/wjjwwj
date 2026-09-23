@@ -33,6 +33,16 @@ const STUCK_RECOVERY_TIME_S := 3.0
 const WORLD_CAR_LOD_INTERVAL_S := 0.5
 const WORLD_CAR_LOD_MID_M := 45.0
 const WORLD_CAR_LOD_FAR_M := 110.0
+## Страховочная плита под игроком: если чанк под машиной ещё не построен
+## (слабый телефон не успевает за стримингом), под ней включается простая
+## поверхность на высоте рельефа.  Провалиться в пустоту больше нельзя, а
+## плита закрывает и машины погони рядом с игроком.
+const SAFETY_GROUND_SIZE := 64.0
+const SAFETY_GROUND_DEPTH := 1.2
+## Насколько высоко над рельефом ставится верх плиты.
+const SAFETY_GROUND_LIFT := 0.2
+## Когда настоящая коллизия на месте, плита уводится на эту глубину.
+const SAFETY_GROUND_PARKED_Y := -6000.0
 
 var world: WorldStreamer = null
 var player: PlayerCar = null
@@ -46,6 +56,8 @@ var world_environment: WorldEnvironment = null
 
 var world_ready: bool = false
 var player_start_position: Vector3 = Vector3.ZERO
+var safety_ground: StaticBody3D = null
+var _safety_ground_parked: bool = true
 
 var _quality: GraphicsQuality = null
 var _upside_down_time_s: float = 0.0
@@ -275,6 +287,9 @@ func _spawn_player() -> void:
 	police.name = "Police"
 	add_child(police)
 	police.configure(player, chase_camera.camera(), roads, terrain)
+	# Полиция спрашивает у стримера, готов ли мир в точке появления: спавнить
+	# машину в ещё не построенный чанк нельзя - она падала под землю.
+	police.world = world
 	Game.register_police_manager(police)
 
 	hud.bind(player, police, roads)
@@ -388,6 +403,63 @@ func _unhandled_input(event: InputEvent) -> void:
 		_on_start_pursuit_requested(Settings.police_count, Settings.ai_level)
 	elif event.is_action_pressed("debug_toggle"):
 		hud.set_debug(not hud.show_debug)
+
+
+## Страховочная плита обновляется в физическом кадре: запросы к физическому
+## пространству вне его движок помечает как ошибку.
+func _physics_process(_delta: float) -> void:
+	_update_safety_ground()
+
+
+func _ensure_safety_ground() -> void:
+	if safety_ground != null and is_instance_valid(safety_ground):
+		return
+	safety_ground = StaticBody3D.new()
+	safety_ground.name = "SafetyGround"
+	safety_ground.collision_layer = 1  # world
+	safety_ground.collision_mask = 0
+	var box := BoxShape3D.new()
+	box.size = Vector3(SAFETY_GROUND_SIZE, SAFETY_GROUND_DEPTH, SAFETY_GROUND_SIZE)
+	var shape := CollisionShape3D.new()
+	shape.shape = box
+	safety_ground.add_child(shape)
+	safety_ground.position = Vector3(0.0, SAFETY_GROUND_PARKED_Y, 0.0)
+	add_child(safety_ground)
+	_safety_ground_parked = true
+
+
+## Если под машиной нет настоящей коллизии (чанк ещё не построен), плита встаёт
+## на высоту рельефа и не даёт машине провалиться.  Когда коллизия на месте,
+## плита уезжает глубоко вниз, чтобы не участвовать в физике.
+func _update_safety_ground() -> void:
+	if player == null or not is_instance_valid(player) or world == null:
+		return
+	_ensure_safety_ground()
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return
+	var query := PhysicsRayQueryParameters3D.create(
+		player.global_position + Vector3.UP * 1.5,
+		player.global_position + Vector3.DOWN * 15.0
+	)
+	query.collision_mask = 1
+	query.exclude = [player.get_rid(), safety_ground.get_rid()]
+	var hit := space.intersect_ray(query)
+	if not hit.is_empty():
+		if not _safety_ground_parked:
+			safety_ground.position = Vector3(0.0, SAFETY_GROUND_PARKED_Y, 0.0)
+			_safety_ground_parked = true
+		return
+	var terrain := world.terrain()
+	if terrain == null:
+		return
+	var ground_y := terrain.height_at(player.global_position.x, player.global_position.z)
+	safety_ground.position = Vector3(
+		player.global_position.x,
+		ground_y - SAFETY_GROUND_DEPTH * 0.5 + SAFETY_GROUND_LIFT,
+		player.global_position.z
+	)
+	_safety_ground_parked = false
 
 
 func _process(delta: float) -> void:

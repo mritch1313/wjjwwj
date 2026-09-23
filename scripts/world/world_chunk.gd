@@ -173,9 +173,12 @@ func set_cull_distances(structure_end_m: float, props_end_m: float, foliage_end_
 		elif index == Layer.PROPS:
 			end = props_end_m
 		instance.visibility_range_end = end
-		# мягкое затухание, чтобы удалённый слой не исчезал рывком
-		instance.visibility_range_end_margin = maxf(end * 0.08, 4.0)
-		instance.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+		# Границы слоёв совпадают с границами построенной зоны: затухание
+		# (полупрозрачные дома и земля на дальнем краю) выглядело как «странные
+		# наложения» и стоило прозрачной отрисовки на телефоне.  Слой исчезает за
+		# своей дальностью сразу, а не растворяется.
+		instance.visibility_range_end_margin = maxf(end * 0.04, 2.0)
+		instance.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
 
 
 ## Дальность отрисовки слоя (для теста и для отладки HUD).

@@ -687,9 +687,10 @@ func _free_placement(candidate: Vector3) -> Vector3:
 	query.exclude = [get_rid()]
 	var lift := 0.0
 	for attempt in range(6):
-		# Коробка ставится НАД точкой: земля под колёсами не должна считаться
-		# препятствием, иначе машина всегда «поднималась бы» из-под земли.
-		query.transform = Transform3D(Basis(), candidate + Vector3.UP * (lift + 0.55))
+		# Коробка ставится НАД точкой: земля и полотно дороги под колёсами не
+		# должны считаться препятствием, иначе машина «поднималась бы» из-под
+		# собственного асфальта.  Зазор 0.2 м больше, чем толщина полотна.
+		query.transform = Transform3D(Basis(), candidate + Vector3.UP * (lift + 0.75))
 		if space.intersect_shape(query, 1).is_empty():
 			return candidate + Vector3.UP * lift
 		lift += 0.8

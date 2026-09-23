@@ -51,6 +51,8 @@ var last_spawn_status: Dictionary = {}
 var total_arrests: int = 0
 var total_escapes: int = 0
 var spawn_failures: int = 0
+## Стример мира: по нему проверяется, что точка появления полиции уже построена.
+var world: WorldStreamer = null
 
 var _lod_timer_s: float = 0.0
 var _role_timer_s: float = 0.0
@@ -59,6 +61,7 @@ var _rng := RandomNumberGenerator.new()
 var _player_history: PackedVector3Array = PackedVector3Array()
 var _history_timer: float = 0.0
 var _player_was_on_road: bool = true
+var _rescue_timer_s: float = 0.0
 
 
 func _ready() -> void:
@@ -136,6 +139,7 @@ func _physics_process(delta: float) -> void:
 	if not pursuit_active or player == null or not is_instance_valid(player):
 		return
 	elapsed_s += delta
+	_rescue_sunken(delta)
 	_update_player_history(delta)
 	_escalate()
 	var context := _build_context()
@@ -300,6 +304,29 @@ func _spawn_one() -> bool:
 		player.global_position, player.forward_direction(), camera, occupied, space
 	)
 	last_spawn_status = spawn_manager.stats()
+	# Точка появления должна быть в уже построенной части мира: спавн над
+	# пустотой - это падение сквозь землю.  Если выбранная точка не готова, она
+	# подтягивается к игроку по тому же направлению (полиция выезжает сзади или
+	# сбоку, но по настоящей дороге), а не отменяет погоню.
+	if world != null and not spawn.is_empty():
+		var point: Vector3 = spawn.get("point", player.global_position)
+		var too_far: bool = point.distance_to(player.global_position) > world.view_radius * 0.75
+		if too_far or not world.is_ready_around(point, 24.0):
+			var direction := point - player.global_position
+			direction.y = 0.0
+			if direction.length_squared() < 1.0:
+				direction = player.forward_direction()
+			direction = direction.normalized()
+			# Ищем дорогу всё ближе к игроку, пока не попадём в построенную зону:
+			# лучше выехать сзади в 50 м, чем упасть сквозь землю в 300 м.
+			for distance in [130.0, 90.0, 50.0]:
+				var probe: Vector3 = player.global_position + direction * distance
+				var fallback: Dictionary = network.nearest_road(probe, 70.0) if network != null else {}
+				if fallback.is_empty():
+					continue
+				if world.is_ready_around(fallback["point"], 16.0):
+					spawn["point"] = fallback["point"]
+					break
 	if spawn.is_empty():
 		spawn_failures += 1
 		last_spawn_time_s = elapsed_s
@@ -335,6 +362,33 @@ func _spawn_one() -> bool:
 
 
 ## -------------------------------------------------------------------- arrest
+## Машина, оказавшаяся ниже рельефа (не построенный вовремя чанк), возвращается
+## на землю: для ИИ это восстановление, а не телепорт в погоне - игрок его не
+## видит, зато погоня не ломается.
+func _rescue_sunken(delta: float) -> void:
+	if terrain == null:
+		return
+	_rescue_timer_s += delta
+	if _rescue_timer_s < 0.25:
+		return
+	_rescue_timer_s = 0.0
+	for car in cars:
+		if not is_instance_valid(car):
+			continue
+		var position := car.global_position
+		var ground := terrain.height_at(position.x, position.z)
+		if position.y > ground - 1.5:
+			continue
+		var forward: Vector3 = car.forward_direction()
+		var yaw := atan2(forward.x, forward.z) if forward.length_squared() > 0.0001 else 0.0
+		car.global_transform = Transform3D(
+			Basis(Vector3.UP, yaw),
+			Vector3(position.x, ground + 1.4, position.z)
+		)
+		car.linear_velocity = Vector3.ZERO
+		car.angular_velocity = Vector3.ZERO
+
+
 func _update_arrest(delta: float) -> void:
 	if arrest_system == null or is_arrested():
 		return

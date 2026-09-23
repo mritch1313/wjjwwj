@@ -3,16 +3,17 @@ extends Control
 
 ## On-screen driving controls for a portrait phone.
 ##
-## Layout (bottom half of the screen is the "hands" area):
-##   left lower corner  : steering (either two arrow buttons or a virtual wheel)
-##   right lower corner : throttle (big pedal), brake/reverse, handbrake, nitro
-##   right middle area  : free drag for the camera (the HUD forwards the delta)
-##   top right          : pause
+## Раскладка (низ экрана - «руки», верх занят HUD и миникартой):
+##   слева снизу  : руль (круглый стик) либо две кнопки «влево / вправо»
+##   справа снизу : ГАЗ (большая круглая педаль), ТОРМОЗ/НАЗАД, РУЧНИК, N2O
+##   свободное поле: свайп - свободный обзор камеры
 ##
-## The control writes into a VehicleInput object; the player car reads it every
-## physics frame, exactly like an AI brain would.  Everything is drawn in code
-## (no textures) and scales with the viewport, so the game stays usable from a
-## small 720p phone to a tablet.
+## Всё рисуется кодом (без текстур) и масштабируется от размера экрана, поэтому
+## управление одинаково работает и на 720p телефоне, и на планшете.
+##
+## Кнопки круглые: попадание считается по радиусу с запасом, палец «прилипает»
+## к кнопке, пока не уйдёт слишком далеко, а при отрыве пальца состояние
+## сбрасывается всегда - раньше кнопка могла остаться нажатой навсегда.
 
 signal pause_requested()
 signal camera_mode_requested()
@@ -20,8 +21,12 @@ signal reset_requested()
 signal nitro_pressed()
 signal horn_pressed()
 
-const STICK_RADIUS := 86.0
+const STICK_RADIUS := 92.0
 const DEADZONE := 0.12
+## Запас к радиусу кнопки: попасть пальцем проще, чем в точный круг.
+const HIT_PADDING := 1.16
+## Насколько далеко палец может уйти от кнопки, не отпуская её.
+const HOLD_PADDING := 1.7
 
 @export var steering_mode: int = SettingsManager.SteeringMode.BUTTONS:
 	set(value):
@@ -49,16 +54,20 @@ var _camera_touch_id: int = -1
 var _touches: Dictionary = {}
 
 var _steer_center: Vector2 = Vector2.ZERO
-var _throttle_rect: Rect2 = Rect2()
-var _brake_rect: Rect2 = Rect2()
-var _handbrake_rect: Rect2 = Rect2()
-var _nitro_rect: Rect2 = Rect2()
-var _left_rect: Rect2 = Rect2()
-var _right_rect: Rect2 = Rect2()
-var _pause_rect: Rect2 = Rect2()
+var _steer_radius: float = STICK_RADIUS
+var _left_center: Vector2 = Vector2.ZERO
+var _right_center: Vector2 = Vector2.ZERO
+var _steer_button_radius: float = 54.0
+var _throttle_center: Vector2 = Vector2.ZERO
+var _throttle_radius: float = 62.0
+var _brake_center: Vector2 = Vector2.ZERO
+var _brake_radius: float = 54.0
+var _handbrake_center: Vector2 = Vector2.ZERO
+var _handbrake_radius: float = 40.0
+var _nitro_center: Vector2 = Vector2.ZERO
+var _nitro_size: Vector2 = Vector2(96.0, 62.0)
 var _scale: float = 1.0
 var _font: Font = null
-
 
 
 func _ready() -> void:
@@ -72,70 +81,145 @@ func _ready() -> void:
 
 func _update_layout() -> void:
 	var viewport_size := get_viewport().get_visible_rect().size
-	# Анкеры растянуты на весь экран, поэтому size здесь только дублирует их:
-	# ставим его отложенно, иначе Godot ругается на переопределение размера.
 	if not size.is_equal_approx(viewport_size):
 		set_deferred("size", viewport_size)
-	_scale = clampf(viewport_size.x / 720.0, 0.75, 2.0) * Settings.hud_scale
+	_scale = clampf(viewport_size.x / 720.0, 0.72, 2.0) * clampf(Settings.hud_scale, 0.8, 1.4)
 	var bottom := viewport_size.y
-	var margin := 18.0 * _scale
-	var pedal := 96.0 * _scale
-	# --- left: steering
-	_steer_center = Vector2(margin + STICK_RADIUS * _scale, bottom - margin - STICK_RADIUS * _scale - 10.0 * _scale)
-	var arrow := 78.0 * _scale
-	_left_rect = Rect2(_steer_center - Vector2(STICK_RADIUS * _scale, STICK_RADIUS * _scale * 0.5), Vector2(arrow, arrow))
-	_right_rect = Rect2(
-		_steer_center + Vector2(STICK_RADIUS * _scale - arrow, -STICK_RADIUS * _scale * 0.5),
-		Vector2(arrow, arrow)
+	var right := viewport_size.x
+	var margin := 22.0 * _scale
+
+	# --- слева: руль
+	_steer_radius = STICK_RADIUS * _scale
+	_steer_button_radius = 56.0 * _scale
+	_steer_center = Vector2(margin + _steer_radius, bottom - margin - _steer_radius)
+	_left_center = _steer_center + Vector2(-_steer_button_radius - 8.0 * _scale, 0.0)
+	_right_center = _steer_center + Vector2(_steer_button_radius + 8.0 * _scale, 0.0)
+
+	# --- справа: педали.  Газ - самая большая кнопка в правом нижнем углу.
+	_throttle_radius = 64.0 * _scale
+	_throttle_center = Vector2(right - margin - _throttle_radius, bottom - margin - _throttle_radius)
+	_brake_radius = 56.0 * _scale
+	_brake_center = _throttle_center + Vector2(-_throttle_radius - _brake_radius - 10.0 * _scale, 6.0 * _scale)
+	_handbrake_radius = 42.0 * _scale
+	_handbrake_center = Vector2(
+		_throttle_center.x - _throttle_radius * 0.35,
+		_throttle_center.y - _throttle_radius - _handbrake_radius - 14.0 * _scale
 	)
-	# --- right: pedals
-	_throttle_rect = Rect2(viewport_size.x - margin - pedal, bottom - margin - pedal * 2.35, pedal, pedal * 1.35)
-	_brake_rect = Rect2(viewport_size.x - margin - pedal * 2.1, bottom - margin - pedal, pedal, pedal)
-	_handbrake_rect = Rect2(viewport_size.x - margin - pedal * 1.05, bottom - margin - pedal * 1.05, pedal * 0.9, pedal * 0.9)
-	_nitro_rect = Rect2(viewport_size.x - margin - pedal * 0.95, bottom - margin - pedal * 2.15, pedal * 0.85, pedal * 0.75)
-	# --- top right: pause
-	_pause_rect = Rect2(viewport_size.x - margin - 64.0 * _scale, margin, 64.0 * _scale, 64.0 * _scale)
+	_nitro_size = Vector2(112.0, 66.0) * _scale
+	_nitro_center = Vector2(
+		_brake_center.x - _nitro_size.x * 0.5 - 6.0 * _scale,
+		bottom - margin - _nitro_size.y * 0.5 - 6.0 * _scale
+	)
 	queue_redraw()
 
 
 ## ------------------------------------------------------------------ drawing --
 func _draw() -> void:
-	var opacity := clampf(0.55 + 0.4 * (1.0 / maxf(Settings.hud_scale, 0.5)), 0.45, 0.95)
-	var button_color := Color(0.12, 0.14, 0.18, opacity * 0.6)
-	var active_color := Color(0.20, 0.62, 0.95, opacity)
+	var outline := Color(0.78, 0.86, 1.0, 0.55)
+	var glass := Color(0.07, 0.09, 0.13, 0.52)
+	var accent := Color(0.24, 0.66, 1.0, 0.92)
+	var warn := Color(1.0, 0.72, 0.22, 0.95)
+	var boost := Color(0.86, 0.38, 1.0, 0.95)
+
 	if _mode == SettingsManager.SteeringMode.WHEEL:
-		_draw_wheel(button_color, active_color)
+		_draw_steer_stick(glass, outline, accent)
 	else:
-		_draw_arrow(_left_rect, "◀", steer_value < -DEADZONE, button_color, active_color)
-		_draw_arrow(_right_rect, "▶", steer_value > DEADZONE, button_color, active_color)
-	_draw_arrow(_throttle_rect, "▲", throttle_pressed, button_color, active_color)
-	_draw_arrow(_brake_rect, "▼", brake_pressed, button_color, active_color)
-	_draw_arrow(_handbrake_rect, "H", handbrake_active, button_color, Color(0.95, 0.72, 0.2, opacity))
-	_draw_arrow(_nitro_rect, "N2O", nitro_active, button_color, Color(0.9, 0.35, 0.95, opacity))
-	_draw_arrow(_pause_rect, "II", false, button_color, active_color)
+		_draw_pad(_left_center, _steer_button_radius, "◀", steer_value < -DEADZONE, glass, outline, accent)
+		_draw_pad(_right_center, _steer_button_radius, "▶", steer_value > DEADZONE, glass, outline, accent)
+
+	_draw_pad(_throttle_center, _throttle_radius, "▲", throttle_pressed, glass, outline, accent)
+	_draw_capsule(_brake_center, _brake_radius, "ТОРМОЗ", brake_pressed, glass, outline, warn)
+	_draw_pad(_handbrake_center, _handbrake_radius, "РУЧН", handbrake_active, glass, outline, warn)
+	_draw_pill(_nitro_center, _nitro_size, "N2O", nitro_active, glass, outline, boost)
+	_draw_hint()
 
 
-func _draw_arrow(rect: Rect2, label: String, active: bool, idle: Color, glow: Color) -> void:
-	var color := glow if active else idle
-	draw_rect(rect, color, true)
-	draw_rect(rect, Color(0.85, 0.9, 1.0, 0.35), false, 2.0)
+## Круглая кнопка с подписью и подсветкой нажатия.
+func _draw_pad(center: Vector2, radius: float, label: String, active: bool, glass: Color, outline: Color, glow: Color) -> void:
+	if active:
+		draw_circle(center, radius + 6.0 * _scale, Color(glow.r, glow.g, glow.b, 0.22))
+	draw_circle(center, radius, glow if active else glass)
+	draw_arc(center, radius, 0.0, TAU, 40, glow if active else outline, 2.5 * _scale, true)
+	if _font != null:
+		var text_size := _font.get_string_size(label, HORIZONTAL_ALIGNMENT_CENTER, -1, int(22.0 * _scale))
+		draw_string(
+			_font, center - Vector2(text_size.x * 0.5, -text_size.y * 0.32), label,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, int(22.0 * _scale),
+			Color(1.0, 1.0, 1.0, 0.95) if active else Color(0.86, 0.91, 1.0, 0.85)
+		)
+
+
+## Круглая кнопка с мелкой подписью по центру (тормоз, ручник).
+func _draw_capsule(center: Vector2, radius: float, label: String, active: bool, glass: Color, outline: Color, glow: Color) -> void:
+	if active:
+		draw_circle(center, radius + 5.0 * _scale, Color(glow.r, glow.g, glow.b, 0.22))
+	draw_circle(center, radius, glow if active else glass)
+	draw_arc(center, radius, 0.0, TAU, 40, glow if active else outline, 2.5 * _scale, true)
+	if _font != null:
+		var font_size := int(12.0 * _scale)
+		var text_size := _font.get_string_size(label, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size)
+		draw_string(
+			_font, center - Vector2(text_size.x * 0.5, -text_size.y * 0.32), label,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, font_size,
+			Color(1.0, 1.0, 1.0, 0.95) if active else Color(0.86, 0.91, 1.0, 0.85)
+		)
+
+
+## Овальная кнопка (нитро).
+func _draw_pill(center: Vector2, pill: Vector2, label: String, active: bool, glass: Color, outline: Color, glow: Color) -> void:
+	var rect := Rect2(center - pill * 0.5, pill)
+	var radius := pill.y * 0.5
+	if active:
+		draw_style_box(_style_box(radius + 4.0 * _scale, Color(glow.r, glow.g, glow.b, 0.22), Color.TRANSPARENT, 0.0), rect.grow(4.0 * _scale))
+	draw_style_box(_style_box(radius, glow if active else glass, glow if active else outline, 2.5 * _scale), rect)
+	if _font != null:
+		var font_size := int(20.0 * _scale)
+		var text_size := _font.get_string_size(label, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size)
+		draw_string(
+			_font, center - Vector2(text_size.x * 0.5, -text_size.y * 0.32), label,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, font_size,
+			Color(1.0, 1.0, 1.0, 0.95) if active else Color(0.9, 0.86, 1.0, 0.9)
+		)
+
+
+## Круглый руль: внешнее кольцо, ручка в точке, куда сдвинут палец.
+func _draw_steer_stick(glass: Color, outline: Color, accent: Color) -> void:
+	draw_circle(_steer_center, _steer_radius, glass)
+	draw_arc(_steer_center, _steer_radius, 0.0, TAU, 64, outline, 3.0 * _scale, true)
+	draw_arc(_steer_center, _steer_radius * 0.62, PI * 0.15, PI * 0.85, 24, Color(outline.r, outline.g, outline.b, 0.30), 2.0 * _scale, true)
+	var handle := _steer_center + Vector2(steer_value * _steer_radius * 0.62, 0.0)
+	draw_circle(handle, _steer_radius * 0.30, Color(accent.r, accent.g, accent.b, 0.85))
+	draw_arc(handle, _steer_radius * 0.30, 0.0, TAU, 32, Color(1.0, 1.0, 1.0, 0.75), 2.0 * _scale, true)
+	if _font != null:
+		var font_size := int(13.0 * _scale)
+		draw_string(
+			_font, _steer_center + Vector2(-_steer_radius * 0.62, _steer_radius + 18.0 * _scale), "РУЛЬ",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0.82, 0.88, 1.0, 0.6)
+		)
+
+
+func _style_box(radius: float, fill: Color, border: Color, border_width: float) -> StyleBoxFlat:
+	var box := StyleBoxFlat.new()
+	box.bg_color = fill
+	box.set_corner_radius_all(int(maxf(radius, 0.0)))
+	if border_width > 0.0:
+		box.border_color = border
+		box.set_border_width_all(int(maxf(border_width, 0.0)))
+	return box
+
+
+## Подсказка внизу по центру: как выглядит управление.
+func _draw_hint() -> void:
 	if _font == null:
 		return
-	var font_size := int(clampf(rect.size.y * 0.42, 12.0, 34.0))
-	var text_size := _font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
-	var position := rect.position + (rect.size - text_size) * 0.5 + Vector2(0.0, text_size.y * 0.78)
-	draw_string(_font, position, label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0.97, 0.98, 1.0))
-
-
-func _draw_wheel(idle: Color, glow: Color) -> void:
-	var radius := STICK_RADIUS * _scale
-	draw_circle(_steer_center, radius, idle)
-	draw_arc(_steer_center, radius * 0.92, 0.0, TAU, 32, Color(0.85, 0.9, 1.0, 0.25), 2.0, true)
-	# the "wheel" is drawn as a disc that can be dragged around its centre
-	var knob := _steer_center + Vector2(steer_value * radius * 0.6, 0.0)
-	draw_circle(knob, radius * 0.28, glow)
-	if _font != null:
-		draw_string(_font, _steer_center - Vector2(radius * 0.35, -6.0), "◀ ▶", HORIZONTAL_ALIGNMENT_LEFT, -1, int(16.0 * _scale), Color(0.9, 0.95, 1.0, 0.6))
+	var text := "СВАЙП — КАМЕРА"
+	var font_size := int(11.0 * _scale)
+	var text_size := _font.get_string_size(text, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size)
+	var center := Vector2(size.x * 0.5, size.y - 8.0 * _scale)
+	draw_string(
+		_font, center - Vector2(text_size.x * 0.5, 0.0), text,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0.8, 0.86, 1.0, 0.35)
+	)
 
 
 ## -------------------------------------------------------------------- input --
@@ -160,86 +244,142 @@ func _input(event: InputEvent) -> void:
 			_handle_drag(drag)
 
 
+func _in_circle(center: Vector2, radius: float, position: Vector2) -> bool:
+	return center.distance_to(position) <= radius * HIT_PADDING
+
+
+func _in_pill(center: Vector2, pill: Vector2, position: Vector2) -> bool:
+	var half := pill * 0.5 * HIT_PADDING
+	return absf(position.x - center.x) <= half.x and absf(position.y - center.y) <= half.y
+
+
 func _handle_touch(event: InputEventScreenTouch) -> void:
 	if event.pressed:
-		if _pause_rect.has_point(event.position):
-			pause_requested.emit()
+		# Порядок важен: сначала самые крупные и важные кнопки.
+		if _in_circle(_throttle_center, _throttle_radius, event.position):
+			_touches[event.index] = "throttle"
+			throttle_pressed = true
+			_rebuild_input()
 			return
-		if _nitro_rect.has_point(event.position):
+		if _in_circle(_brake_center, _brake_radius, event.position):
+			_touches[event.index] = "brake"
+			brake_pressed = true
+			_rebuild_input()
+			return
+		if _in_pill(_nitro_center, _nitro_size, event.position):
 			_touches[event.index] = "nitro"
 			nitro_active = true
 			nitro_pressed.emit()
+			_rebuild_input()
 			return
-		if _handbrake_rect.has_point(event.position):
+		if _in_circle(_handbrake_center, _handbrake_radius, event.position):
 			_touches[event.index] = "handbrake"
 			handbrake_active = true
-			return
-		if _throttle_rect.has_point(event.position):
-			_touches[event.index] = "throttle"
-			throttle_pressed = true
-			return
-		if _brake_rect.has_point(event.position):
-			_touches[event.index] = "brake"
-			brake_pressed = true
+			_rebuild_input()
 			return
 		if _mode == SettingsManager.SteeringMode.WHEEL:
-			if _steer_center.distance_to(event.position) < STICK_RADIUS * _scale * 1.6:
+			if _in_circle(_steer_center, _steer_radius, event.position):
 				_steer_touch_id = event.index
 				_touches[event.index] = "steer"
 				_update_steer_from_position(event.position)
 				return
 		else:
-			if _left_rect.has_point(event.position) or _right_rect.has_point(event.position):
-				_touches[event.index] = "steer_button"
-				steer_value = -1.0 if _left_rect.has_point(event.position) else 1.0
+			if _in_circle(_left_center, _steer_button_radius, event.position):
+				_touches[event.index] = "steer_left"
+				steer_value = -1.0
+				_rebuild_input()
 				return
-		# anything else on the right half is a camera drag
-		if event.position.x > get_viewport().get_visible_rect().size.x * 0.35:
+			if _in_circle(_right_center, _steer_button_radius, event.position):
+				_touches[event.index] = "steer_right"
+				steer_value = 1.0
+				_rebuild_input()
+				return
+		# Всё остальное - свободный обзор камерой (правая часть экрана и центр,
+		# чтобы свайп не начинался под большим пальцем на педали).
+		if event.position.y < size.y * 0.72:
 			_camera_touch_id = event.index
 			_touches[event.index] = "camera"
-	else:
-		var kind: String = _touches.get(event.index, "")
-		_touches.erase(event.index)
-		match kind:
-			"throttle":
-				throttle_pressed = false
-			"brake":
-				brake_pressed = false
-			"nitro":
-				nitro_active = false
-			"handbrake":
-				handbrake_active = false
-			"steer", "steer_button":
-				if event.index == _steer_touch_id:
-					_steer_touch_id = -1
+		return
+
+	var kind: String = String(_touches.get(event.index, ""))
+	_touches.erase(event.index)
+	match kind:
+		"throttle":
+			throttle_pressed = false
+		"brake":
+			brake_pressed = false
+		"nitro":
+			nitro_active = false
+		"handbrake":
+			handbrake_active = false
+		"steer":
+			if event.index == _steer_touch_id:
+				_steer_touch_id = -1
+			steer_value = 0.0
+		"steer_left", "steer_right":
+			if not _steer_button_held():
 				steer_value = 0.0
-			"camera":
-				if event.index == _camera_touch_id:
-					_camera_touch_id = -1
+		"camera":
+			if event.index == _camera_touch_id:
+				_camera_touch_id = -1
 	_rebuild_input()
 
 
-## Keyboard/actions are handled by the scene (MainScene._unhandled_input) so that
-## the same key never triggers two different code paths.
+## Держит ли палец одну из кнопок руля (после отпускания второй кнопки руль
+## сбрасывается только если не нажата оставшаяся).
+func _steer_button_held() -> bool:
+	for kind in _touches.values():
+		if kind == "steer_left" or kind == "steer_right":
+			return true
+	return false
+
+
 func _handle_drag(event: InputEventScreenDrag) -> void:
-	var kind: String = _touches.get(event.index, "")
-	if kind == "steer":
-		_update_steer_from_position(event.position)
-	elif kind == "camera" or event.index == _camera_touch_id:
-		camera_drag += event.relative
+	var kind: String = String(_touches.get(event.index, ""))
+	match kind:
+		"steer":
+			_update_steer_from_position(event.position)
+		"camera":
+			camera_drag += event.relative
+		_:
+			# Палец сполз с кнопки слишком далеко - отпускаем её, чтобы машина не
+			# осталась на газу навсегда.
+			if kind == "throttle" and not _in_circle(_throttle_center, _throttle_radius * HOLD_PADDING, event.position):
+				_release_touch(event.index, "throttle")
+			elif kind == "brake" and not _in_circle(_brake_center, _brake_radius * HOLD_PADDING, event.position):
+				_release_touch(event.index, "brake")
+			elif kind == "handbrake" and not _in_circle(_handbrake_center, _handbrake_radius * HOLD_PADDING, event.position):
+				_release_touch(event.index, "handbrake")
+			elif kind == "nitro" and not _in_pill(_nitro_center, _nitro_size * HOLD_PADDING, event.position):
+				_release_touch(event.index, "nitro")
 	_rebuild_input()
+
+
+func _release_touch(index: int, kind: String) -> void:
+	_touches.erase(index)
+	match kind:
+		"throttle":
+			throttle_pressed = false
+		"brake":
+			brake_pressed = false
+		"nitro":
+			nitro_active = false
+		"handbrake":
+			handbrake_active = false
 
 
 func _update_steer_from_position(position: Vector2) -> void:
 	var offset := position - _steer_center
-	var radius := STICK_RADIUS * _scale * 0.8
+	var radius := _steer_radius * 0.8
 	var value := clampf(offset.x / maxf(radius, 1.0), -1.0, 1.0)
 	steer_value = 0.0 if absf(value) < DEADZONE else value
 
 
 ## The control object handed to the car.
 func _rebuild_input() -> void:
-	input.throttle = 1.0 if throttle_pressed else 0.0
+	# Тормоз сильнее газа: если нажаты оба, машина тормозит, а не «едет и
+	# тормозит одновременно».
+	input.throttle = 0.0 if brake_pressed else (1.0 if throttle_pressed else 0.0)
 	input.brake = 1.0 if brake_pressed else 0.0
 	input.handbrake = 1.0 if handbrake_active else 0.0
 	input.nitro = nitro_active
@@ -269,6 +409,33 @@ func reset_state() -> void:
 	_rebuild_input()
 
 
+## Вызывается при смене раскладки в настройках.
+func touch_controls_refresh() -> void:
+	_mode = Settings.steering_mode
+	_update_layout()
+	reset_state()
+
+
+## Нажата ли точка внутри какой-либо кнопки (для тестов и отладки).
+func hit_area_at(position: Vector2) -> String:
+	if _in_circle(_throttle_center, _throttle_radius, position):
+		return "throttle"
+	if _in_circle(_brake_center, _brake_radius, position):
+		return "brake"
+	if _in_pill(_nitro_center, _nitro_size, position):
+		return "nitro"
+	if _in_circle(_handbrake_center, _handbrake_radius, position):
+		return "handbrake"
+	if _mode == SettingsManager.SteeringMode.WHEEL:
+		if _in_circle(_steer_center, _steer_radius, position):
+			return "steer"
+	elif _in_circle(_left_center, _steer_button_radius, position):
+		return "steer_left"
+	elif _in_circle(_right_center, _steer_button_radius, position):
+		return "steer_right"
+	return "camera" if position.y < size.y * 0.72 else ""
+
+
 func status() -> Dictionary:
 	return {
 		"steer": snappedf(steer_value, 0.01),
@@ -278,4 +445,7 @@ func status() -> Dictionary:
 		"nitro": input.nitro,
 		"touches": _touches.size(),
 		"mode": "WHEEL" if _mode == SettingsManager.SteeringMode.WHEEL else "BUTTONS",
+		"throttle_center": _throttle_center,
+		"brake_center": _brake_center,
+		"steer_center": _steer_center,
 	}

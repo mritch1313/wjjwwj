@@ -77,6 +77,9 @@ func setup(world_config: WorldConfig) -> void:
 
 func _apply_radii() -> void:
 	var quality := Settings.preset()
+	# Бюджет генерации берётся из пресета качества: на слабом устройстве шаг
+	# короче, но подгрузка идёт - чанк собирается порциями.
+	_generation_budget_ms = maxf(quality.generation_budget_ms, 2.0)
 	var scale := maxf(Perf.view_scale, 0.6)
 	view_radius = quality.view_distance_m * scale
 	# Нижняя граница радиуса ближнего уровня держит собственный чанк игрока
@@ -244,14 +247,35 @@ func _current_tier_at(distance: float) -> int:
 	return WorldGenerator.TIER_FAR
 
 
+## Приоритет: сначала близкие чанки и уровни повыше, а чанки по курсу движения
+## получают бонус - мир должен появляться перед машиной, а не за ней.
 func _sort_pending() -> void:
-	# Front-to-back by priority: the closest chunks generate first, near tiers
-	# before far ones.
+	var heading := Vector3.ZERO
+	if camera_target != null and is_instance_valid(camera_target) and camera_target.has_method("forward_direction"):
+		heading = camera_target.call("forward_direction")
+	if heading.length_squared() > 0.001:
+		heading = heading.normalized()
+	var use_heading := heading.length_squared() > 0.5
+	var center := _last_center
 	_pending.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		var priority_a := float(a["distance"]) + float(a["tier"]) * 90.0
-		var priority_b := float(b["distance"]) + float(b["tier"]) * 90.0
-		return priority_a < priority_b
+		return _chunk_priority(a, center, heading, use_heading) < _chunk_priority(b, center, heading, use_heading)
 	)
+
+
+func _chunk_priority(entry: Dictionary, center: Vector3, heading: Vector3, use_heading: bool) -> float:
+	var priority := float(entry["distance"]) + float(entry["tier"]) * 90.0
+	if not use_heading:
+		return priority
+	var cell: Vector2i = entry["cell"]
+	var origin := config.chunk_origin(cell)
+	var to_chunk := Vector3(
+		origin.x + config.chunk_size_m * 0.5 - center.x,
+		0.0,
+		origin.z + config.chunk_size_m * 0.5 - center.z
+	)
+	if to_chunk.length_squared() > 1.0:
+		priority -= 70.0 * to_chunk.normalized().dot(heading)
+	return priority
 
 
 ## Одна порция работы над активным чанком за кадр.  Когда чанк готов, из его

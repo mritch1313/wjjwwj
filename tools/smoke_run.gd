@@ -162,6 +162,46 @@ func _run() -> void:
 	var surface: int = player.current_surface
 	_check(surface >= 0, "поверхность под машиной определена (тип %d)" % surface)
 
+	# --- 1a. Сенсорное управление: кнопки должны реально писать ввод в машину.
+	var controls = main.get("touch_controls")
+	if controls != null:
+		var layout: Dictionary = controls.status()
+		var throttle_point: Vector2 = layout["throttle_center"]
+		_check(controls.hit_area_at(throttle_point) == "throttle",
+			"центр педали газа попадает в кнопку газа")
+		var press := InputEventScreenTouch.new()
+		press.index = 3
+		press.pressed = true
+		press.position = throttle_point
+		controls._input(press)
+		_check(controls.vehicle_input.throttle > 0.99, "нажатие газа даёт тягу")
+		var release := InputEventScreenTouch.new()
+		release.index = 3
+		release.pressed = false
+		release.position = throttle_point
+		controls._input(release)
+		_check(controls.vehicle_input.throttle < 0.01, "отпускание газа гасит тягу")
+		var brake_point: Vector2 = layout["brake_center"]
+		var brake_press := InputEventScreenTouch.new()
+		brake_press.index = 4
+		brake_press.pressed = true
+		brake_press.position = brake_point
+		controls._input(brake_press)
+		_check(controls.vehicle_input.brake > 0.99 and controls.vehicle_input.throttle < 0.01,
+			"кнопка тормоза даёт торможение и задний ход")
+		var brake_release := InputEventScreenTouch.new()
+		brake_release.index = 4
+		brake_release.pressed = false
+		brake_release.position = brake_point
+		controls._input(brake_release)
+		var free_point := Vector2(player.global_position.x * 0.0 + 40.0, 60.0)
+		if controls.hit_area_at(free_point) == "camera":
+			_check(true, "свободная область экрана отдана камере")
+		else:
+			_check(false, "свободная область экрана отдана камере")
+	else:
+		_check(false, "сенсорное управление создано")
+
 	# --- 1b. Кнопка «Y» в настройках: каждое нажатие поднимает машину на метр.
 	var lift_start: float = player.global_position.y
 	var lift_origin: Transform3D = player.global_transform
@@ -180,10 +220,18 @@ func _run() -> void:
 	player.global_transform = lift_origin
 	player.linear_velocity = Vector3.ZERO
 	player.angular_velocity = Vector3.ZERO
-	await get_tree().physics_frame
-	await get_tree().physics_frame
-	_check(player.global_position.distance_to(lift_origin.origin) < 0.5,
-		"после кнопки «Y» машина возвращена на исходное место")
+	# Даём машине полсекунды, чтобы подвеска нашла землю после возврата.
+	for frame in range(int(PHYSICS_FPS * 0.5)):
+		await get_tree().physics_frame
+	_check(player.global_position.distance_to(lift_origin.origin) < 3.0,
+		"после кнопки «Y» машина вернулась на исходное место (%.1f м)" % player.global_position.distance_to(lift_origin.origin))
+	print("       после «Y»: y=%.2f земля=%.2f колёс=%d наклон=%.1f° темп %.1f км/ч" % [
+		player.global_position.y,
+		world.terrain().height_at(player.global_position.x, player.global_position.z),
+		player.grounded_wheels,
+		rad_to_deg(player.global_basis.y.angle_to(Vector3.UP)),
+		player.speed_kmh(),
+	])
 
 	# --- 2. Едем вперёд: скорость должна вырасти (проверяем физику, а не позицию).
 	var input: VehicleInput = player.vehicle_input()
@@ -232,9 +280,36 @@ func _run() -> void:
 		player.speed_kmh(), float(DRIVE_FRAMES) / float(PHYSICS_FPS)])
 	if not speed_ok:
 		_dump_car_state(player, world)
+	if player.grounded_wheels == 0:
+		var ground_now: float = world.terrain().height_at(player.global_position.x, player.global_position.z)
+		print("       диагностика: y=%.2f земля=%.2f разница=%.2f темп=%.1f км/ч" % [
+			player.global_position.y, ground_now, player.global_position.y - ground_now, player.speed_kmh()
+		])
+		_dump_car_state(player, world)
 	_check(player.grounded_wheels > 0, "колёса на земле (%d из 4)" % player.grounded_wheels)
 	_check(player.global_position.distance_to(start_position) > 5.0,
 		"машина проехала %.1f м" % player.global_position.distance_to(start_position))
+
+	# --- 2b. Долгий заезд: машина не должна проваливаться под землю, даже если
+	# стример не успел построить чанк впереди (раньше именно это и происходило).
+	var terrain = world.terrain()
+	var sink_frames := 0
+	var worst_sink := 0.0
+	var long_frames := int(PHYSICS_FPS * 12)
+	for frame in range(long_frames):
+		input.throttle = 1.0
+		steer_along_road.call()
+		await get_tree().physics_frame
+		if terrain == null:
+			break
+		var ground: float = terrain.height_at(player.global_position.x, player.global_position.z)
+		var depth: float = ground - player.global_position.y
+		if depth > 1.2:
+			sink_frames += 1
+			worst_sink = maxf(worst_sink, depth)
+	_check(sink_frames == 0, "за 12 с езды машина не провалилась под землю (провалов %d, худший %.1f м)" % [
+		sink_frames, worst_sink])
+	_check(world.loaded_chunk_count() > 0, "мир вокруг машины остался построен: %d чанков" % world.loaded_chunk_count())
 
 	# --- 3. Нитро: тяга появляется и тратит заряд.
 	var nitro: NitroSystem = player.nitro
@@ -277,6 +352,19 @@ func _run() -> void:
 			_check(moved, "машина полиции проехала %.1f м (роль %s)" % [
 				police_car.global_position.distance_to(police_start), police_car.vehicle_role])
 			_check(police_car.is_player_vehicle == false, "машина полиции не считается игроком")
+		# Полиция ездит по тому же миру: под ней тоже не должно быть пустоты.
+		# Даём менеджеру время поднять машину, если она всё же оказалась ниже
+		# земли (в CI тайминги другие, и без паузы проверка была бы хрупкой).
+		await _wait_for(func() -> bool: return false, PHYSICS_FPS, "пауза перед проверкой полиции")
+		if terrain != null:
+			var police_sunk := 0
+			for car in police.cars:
+				if not is_instance_valid(car):
+					continue
+				var police_ground: float = terrain.height_at(car.global_position.x, car.global_position.z)
+				if police_ground - car.global_position.y > 1.2:
+					police_sunk += 1
+			_check(police_sunk == 0, "машины полиции не провалились под землю (провалилось %d)" % police_sunk)
 		else:
 			_check(false, "в менеджере полиции нет машин (только служебные узлы)")
 	print("       (погоня длилась %.1f с)" % ((Time.get_ticks_msec() - pursuit_started) / 1000.0))

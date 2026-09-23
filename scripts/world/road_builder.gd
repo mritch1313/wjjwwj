@@ -196,6 +196,32 @@ func _add_ribbon(
 			Vector3.UP
 		)
 
+	# Коллизия полотна: визуальная дорога раньше не имела физики вообще, и на
+	# эстакадах (полотно выше земли на метры) машина проваливалась вниз, а на
+	# насыпи ехала по земле под асфальтом.  Верхняя поверхность полотна
+	# повторяет видимые квады один в один, поэтому колёса стоят точно на
+	# асфальте и на мостах.
+	var quads := matrix.size() - 1
+	if quads > 0:
+		var deck_faces := PackedVector3Array()
+		deck_faces.resize(quads * 6)
+		var write := 0
+		for i in range(quads):
+			var fa: Dictionary = matrix[i]
+			var fb: Dictionary = matrix[i + 1]
+			deck_faces[write] = fa["left"]
+			deck_faces[write + 1] = fb["left"]
+			deck_faces[write + 2] = fb["right"]
+			deck_faces[write + 3] = fa["left"]
+			deck_faces[write + 4] = fb["right"]
+			deck_faces[write + 5] = fa["right"]
+			write += 6
+		colliders.append({
+			"shape": "trimesh",
+			"faces": deck_faces,
+			"transform": Transform3D.IDENTITY,
+		})
+
 	if not detailed:
 		return
 	# kerbs + sidewalks (city) or gravel shoulders (rural / desert)

@@ -151,6 +151,9 @@ func begin_chunk(cell: Vector2i, tier: int) -> ChunkJob:
 	job.terrain_rows = int(params["rows"])
 	job.base_x = float(params["base_x"])
 	job.base_z = float(params["base_z"])
+	# Чем грубее сетка (mid/far), тем крупнее блоки раскраски: на дальних чанках
+	# пятна текстуры всё равно не различить.
+	job.material_block = 2 if tier <= TIER_NEAR else 3
 	var sample_count := job.terrain_rows * job.terrain_rows
 	job.heights.resize(sample_count)
 	job.materials.resize(sample_count)
@@ -277,18 +280,31 @@ func _terrain_params(tier: int, rect: Rect2) -> Dictionary:
 
 func _sample_terrain_rows(job: ChunkJob, from_row: int, to_row: int) -> void:
 	var rows := job.terrain_rows
+	var block: int = job.material_block
 	for iz in range(from_row, to_row):
+		var z := job.base_z + float(iz) * job.terrain_step
+		var iz0 := iz - (iz % block)
 		for ix in range(rows):
 			var x := job.base_x + float(ix) * job.terrain_step
-			var z := job.base_z + float(iz) * job.terrain_step
 			var index := iz * rows + ix
 			var height := terrain.height_at(x, z)
 			job.heights[index] = height
 			# Наклон для раскраски считается из уже посчитанных высот (см. ниже),
 			# отдельный сэмпл рельефа на вершину был чистой тратой времени.
-			var surface := terrain.surface_at(x, z, height)
-			job.materials[index] = terrain.terrain_material_at(x, z, surface)
-			job.tints[index] = terrain.terrain_tint_at(x, z)
+			# Материал и оттенок берутся блоками: три запроса (поверхность,
+			# материал, оттенок) стоят вчетверо дороже самой высоты, а переходы
+			# текстур на земле и так идут пятнами по несколько метров.
+			if iz % block == 0:
+				if ix % block == 0:
+					var surface := terrain.surface_at(x, z, height)
+					job.block_material = terrain.terrain_material_at(x, z, surface)
+					job.block_tint = terrain.terrain_tint_at(x, z)
+				job.materials[index] = job.block_material
+				job.tints[index] = job.block_tint
+			else:
+				var source := iz0 * rows + ix
+				job.materials[index] = job.materials[source]
+				job.tints[index] = job.tints[source]
 
 
 func _build_terrain_quads(job: ChunkJob, from_row: int, to_row: int) -> void:
@@ -510,6 +526,10 @@ class ChunkJob:
 	var heights: PackedFloat32Array = PackedFloat32Array()
 	var materials: PackedStringArray = PackedStringArray()
 	var tints: PackedColorArray = PackedColorArray()
+	## Блок раскраски (материал и оттенок считаются раз в block x block вершин).
+	var material_block: int = 2
+	var block_material: String = "grass"
+	var block_tint: Color = Color.WHITE
 	# дороги
 	var road_segments: PackedInt32Array = PackedInt32Array()
 	var junctions: PackedInt32Array = PackedInt32Array()

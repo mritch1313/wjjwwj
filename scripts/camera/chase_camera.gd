@@ -145,7 +145,12 @@ func _apply_mode(new_mode: int) -> void:
 	mode_changed.emit(mode)
 
 
-func _process(delta: float) -> void:
+## Камера обновляется в физическом кадре: SpringArm3D (и наша собственная
+## проверка препятствий) запрашивают физическое пространство, а вне физического
+## кадра движок запрещает такие запросы.  Заодно камера и арм двигаются в одном
+## кадре - раньше арм работал по позиции прошлого кадра и камера успевала
+## проскочить сквозь стену.
+func _physics_process(delta: float) -> void:
 	if target == null or not is_instance_valid(target):
 		return
 	_ensure_nodes()
@@ -178,6 +183,16 @@ func _process(delta: float) -> void:
 	var arm_length := distance
 	desired = look_target + horizontal * arm_length * cos(orbit_pitch) + Vector3.UP * (height + arm_length * sin(-orbit_pitch) * 0.9)
 	desired.y = maxf(desired.y, target_position.y + 0.55)
+	# Собственная защита от стен и земли: если между машиной и точкой камеры
+	# есть геометрия, камера подтягивается перед ней.  SpringArm делает то же
+	# самое, но он работает по своему узлу, а здесь точка камеры уже посчитана
+	# полностью.
+	var blocked := _blocked_distance(look_target, desired)
+	if blocked > 0.0:
+		var direction := (desired - look_target).normalized()
+		if direction.length_squared() < 0.001:
+			direction = Vector3.UP
+		desired = look_target + direction * maxf(blocked - 0.4, 0.8)
 	global_position = global_position.lerp(desired, 1.0 - exp(-smoothing_position * delta))
 	var look := look_target + Vector3.UP * (0.9 + height * 0.18) + horizontal * 0.4
 	if _shake > 0.02:
@@ -190,6 +205,24 @@ func _process(delta: float) -> void:
 	_update_fov(delta)
 	_last_valid_position = global_position
 	_initialised = true
+
+
+## Расстояние от look_target до ближайшего препятствия в сторону камеры
+## (0.0 - путь свободен).
+func _blocked_distance(from: Vector3, to: Vector3) -> float:
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return 0.0
+	var query := PhysicsRayQueryParameters3D.create(from, to)
+	query.collision_mask = 1 | (1 << 1)  # world + props
+	var excluded: Array[RID] = []
+	if target is CollisionObject3D:
+		excluded.append((target as CollisionObject3D).get_rid())
+	query.exclude = excluded
+	var hit := space.intersect_ray(query)
+	if hit.is_empty():
+		return 0.0
+	return from.distance_to(hit["position"] as Vector3)
 
 
 func _update_fov(delta: float) -> void:
