@@ -119,6 +119,11 @@ func _make_shape(entry: Dictionary) -> Shape3D:
 		"trimesh":
 			var trimesh := ConcavePolygonShape3D.new()
 			trimesh.set_faces(entry.get("faces", PackedVector3Array()))
+			# Тонкая коллизия земли: машина на скорости проваливается сквозь неё,
+			# если у машины выключено непрерывное обнаружение столкновений (оно
+			# включено) или если скорость выше, чем допускает форма.  Флаг ниже
+			# помечает форму как "тонкую" для физического движка.
+			trimesh.backface_collision = true
 			return trimesh
 		"heightmap":
 			var heightmap := HeightMapShape3D.new()

@@ -19,6 +19,11 @@ signal world_ready()
 
 const TIER_DISTANCE_FACTOR_NEAR := 0.42
 const TIER_DISTANCE_FACTOR_MID := 0.78
+## Гистерезис уровней: повышение детализации идёт по своей границе, понижение -
+## только если чанк ушёл заметно дальше.  Без него чанк на границе радиуса
+## перестраивался на каждом шаге стримера: игрок стоит на месте, а генератор
+## мешей работает без остановки (это и давало провалы до единиц кадров).
+const TIER_HYSTERESIS_M := 40.0
 
 var config: WorldConfig
 var generator: WorldGenerator
@@ -66,10 +71,18 @@ func _apply_radii() -> void:
 	var quality := Settings.preset()
 	var scale := maxf(Perf.view_scale, 0.6)
 	view_radius = quality.view_distance_m * scale
-	near_radius = maxf(view_radius * TIER_DISTANCE_FACTOR_NEAR, config.chunk_size_m * 1.05)
+	# Нижняя граница радиуса ближнего уровня держит собственный чанк игрока
+	# "ближним".  На слабом пресете она ниже: ближний чанк самый дорогой
+	# (полная застройка, бордюры, мебель), и девять таких чанков вокруг игрока
+	# слабый GPU не тянет.  0.8 длины чанка всё равно накрывает чанк игрока.
+	var near_floor := config.chunk_size_m * (0.8 if quality.view_distance_m <= 360.0 else 1.05)
+	near_radius = maxf(view_radius * TIER_DISTANCE_FACTOR_NEAR, near_floor)
 	mid_radius = maxf(view_radius * TIER_DISTANCE_FACTOR_MID, config.chunk_size_m * 1.6)
 	_generation_budget_ms = quality.generation_budget_ms
-	_max_generations = quality.max_generations_per_frame
+	# Генерация чанка - самая дорогая операция в игре. На слабом пресете строим
+	# строго по одному чанку за кадр: два-три подряд дают рывки в сотни
+	# миллисекунд, из-за которых кадр не успевает отрисоваться вовсе.
+	_max_generations = 1 if quality.view_distance_m <= 360.0 else quality.max_generations_per_frame
 
 
 func apply_quality(quality: GraphicsQuality) -> void:
@@ -198,6 +211,20 @@ func _rebuild_plan(center: Vector3) -> void:
 
 
 func _tier_for_distance(distance: float) -> int:
+	if distance <= near_radius:
+		return WorldGenerator.TIER_NEAR
+	if distance <= near_radius + TIER_HYSTERESIS_M and _current_tier_at(distance) == WorldGenerator.TIER_NEAR:
+		return WorldGenerator.TIER_NEAR
+	if distance <= mid_radius:
+		return WorldGenerator.TIER_MID
+	if distance <= mid_radius + TIER_HYSTERESIS_M and _current_tier_at(distance) == WorldGenerator.TIER_MID:
+		return WorldGenerator.TIER_MID
+	return WorldGenerator.TIER_FAR
+
+
+## Уровень, который был бы выбран без гистерезиса (используется только для
+## проверки "не понижаем ли мы уровень слишком рано").
+func _current_tier_at(distance: float) -> int:
 	if distance <= near_radius:
 		return WorldGenerator.TIER_NEAR
 	if distance <= mid_radius:

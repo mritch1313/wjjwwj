@@ -42,6 +42,7 @@ var _loading_label: Label = null
 var _loading_bar: ColorRect = null
 var _loading_bar_bg: ColorRect = null
 var _settings_hint: Label = null
+var _orientation_button: Button = null
 var _loading_progress: float = 0.0
 
 
@@ -144,6 +145,7 @@ func _build_settings_panel() -> void:
 	_button(box, L10n.t("minimap"), _toggle_minimap, 17)
 	_button(box, L10n.t("hud_scale"), _cycle_hud_scale, 17)
 	_button(box, L10n.t("language"), _toggle_language, 17)
+	_orientation_button = _button(box, _orientation_label(), _cycle_orientation, 17)
 	_settings_hint = _title(box, "", 13, Color(0.7, 0.8, 0.95))
 	_button(box, L10n.t("close"), func() -> void: _show_settings(false), 20, 0.0, 8.0)
 	_settings_panel.visible = false
@@ -363,6 +365,28 @@ func _cycle_hud_scale() -> void:
 	Settings.hud_scale = steps[(index + 1) % steps.size()]
 	Settings.save_now()
 	_refresh_settings_hint()
+
+
+## Ориентация экрана: по умолчанию портрет из проекта, но игрок может
+## принудительно выбрать вертикальную или горизонтальную - на телефоне это
+## вопрос удобства, а не только графики.
+func _cycle_orientation() -> void:
+	Settings.orientation_mode = (Settings.orientation_mode + 1) % 3
+	Settings.apply_orientation()
+	Settings.save_now()
+	if _orientation_button != null:
+		_orientation_button.text = _orientation_label()
+	Game.toast.emit(L10n.t("orientation_applied") % _orientation_label())
+
+
+func _orientation_label() -> String:
+	match Settings.orientation_mode:
+		1:
+			return "%s: %s" % [L10n.t("orientation"), L10n.t("orientation_portrait")]
+		2:
+			return "%s: %s" % [L10n.t("orientation"), L10n.t("orientation_landscape")]
+		_:
+			return "%s: %s" % [L10n.t("orientation"), L10n.t("orientation_auto")]
 
 
 func _toggle_language() -> void:

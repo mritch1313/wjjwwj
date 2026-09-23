@@ -16,6 +16,7 @@ func before_all() -> void:
 func test_chunk_has_layered_geometry_and_colliders() -> void:
 	var cell := Vector2i(10, 10)  # city centre chunk
 	var result := generator.generate_chunk(cell, WorldGenerator.TIER_NEAR)
+	print("       генерация городского чанка: %.1f мс" % float(result.get("generation_ms", 0.0)))
 	assert_true(result.has("meshes"), "чанк возвращает меши по слоям")
 	var meshes: Array = result["meshes"]
 	assert_eq(meshes.size(), 4, "четыре слоя: рельеф, дороги, строения, растительность")

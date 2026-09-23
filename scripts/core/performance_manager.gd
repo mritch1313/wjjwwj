@@ -23,6 +23,9 @@ var prop_density_scale: float = 1.0
 var lod_scale: float = 1.0
 var particles_allowed: bool = true
 var shadows_allowed: bool = true
+## Множитель разрешения рендера (1.0 - как в пресете).  Снижается первым: на
+## мобильном GPU цена кадра почти линейна по числу пикселей.
+var resolution_scale: float = 1.0
 var ai_update_stride: int = 1
 
 @export_group("AI budgets (seconds between updates)")
@@ -52,8 +55,11 @@ func set_quality_scale(preset: GraphicsQuality) -> void:
 	lod_scale = 1.0
 	particles_allowed = preset.particles_enabled
 	shadows_allowed = preset.shadows_enabled
+	resolution_scale = 1.0
 	ai_update_stride = 1
-	target_frame_ms = 22.0 if not preset.shadows_enabled else 24.0
+	# Целевой кадр: 33 мс (30 к/с) на телефоне вместо 22-24 - иначе автоадаптация
+	# считает нормальный телефонный кадр "медленным" и бесконечно снижает качество.
+	target_frame_ms = 33.0 if OS.has_feature("mobile") else (22.0 if not preset.shadows_enabled else 24.0)
 
 
 func chase_interval(level: int) -> float:
@@ -90,12 +96,19 @@ func _process(delta: float) -> void:
 
 
 func _degrade() -> void:
-	if prop_density_scale > 0.55:
-		prop_density_scale = maxf(prop_density_scale - 0.15, 0.55)
-	elif lod_scale > 0.7:
-		lod_scale = maxf(lod_scale - 0.1, 0.7)
-	elif view_scale > 0.7:
-		view_scale = maxf(view_scale - 0.1, 0.7)
+	# Порядок важен: сначала тени (самое дорогое на мобильном GPU), затем
+	# разрешение, и только потом плотность мира - чтобы игра оставалась похожей
+	# на себя, а не превращалась в пустое поле.
+	if shadows_allowed:
+		shadows_allowed = false
+	elif resolution_scale > 0.6:
+		resolution_scale = maxf(resolution_scale - 0.15, 0.6)
+	elif prop_density_scale > 0.45:
+		prop_density_scale = maxf(prop_density_scale - 0.15, 0.45)
+	elif lod_scale > 0.65:
+		lod_scale = maxf(lod_scale - 0.1, 0.65)
+	elif view_scale > 0.65:
+		view_scale = maxf(view_scale - 0.1, 0.65)
 	elif particles_allowed:
 		particles_allowed = false
 	elif ai_update_stride < 3:
@@ -106,6 +119,8 @@ func _degrade() -> void:
 
 
 func _upgrade() -> void:
+	# Обратный порядок: сначала возвращаем разрешение и мир, тени - в последнюю
+	# очередь (они и стоят дороже всего).
 	if ai_update_stride > 1:
 		ai_update_stride -= 1
 	elif not particles_allowed:
@@ -116,6 +131,12 @@ func _upgrade() -> void:
 		lod_scale = minf(lod_scale + 0.1, 1.0)
 	elif prop_density_scale < 1.0:
 		prop_density_scale = minf(prop_density_scale + 0.1, 1.0)
+	elif resolution_scale < 1.0:
+		resolution_scale = minf(resolution_scale + 0.15, 1.0)
+	elif not shadows_allowed:
+		shadows_allowed = Settings.preset().shadows_enabled
+		if not shadows_allowed:
+			return
 	else:
 		return
 	scalers_changed.emit(minf(view_scale, minf(prop_density_scale, lod_scale)))
@@ -127,6 +148,8 @@ func stats() -> Dictionary:
 		"frame_ms": snappedf(average_frame_ms, 0.01),
 		"worst_ms": snappedf(worst_frame_ms, 0.01),
 		"view_scale": snappedf(view_scale, 0.01),
+		"resolution_scale": snappedf(resolution_scale, 0.01),
+		"shadows": shadows_allowed,
 		"prop_scale": snappedf(prop_density_scale, 0.01),
 		"lod_scale": snappedf(lod_scale, 0.01),
 		"ai_stride": ai_update_stride,

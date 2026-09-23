@@ -16,11 +16,23 @@ extends Node3D
 ##      progress bar, so the player never sees an empty world,
 ##   4. everything else (car, camera, HUD, police) and the menu.
 
-const WARMUP_CHUNKS_PER_STEP := 3
+## Сколько чанков строим за один шаг заставки.  После ускорения MeshBuilder
+## чанк строится в разы быстрее, поэтому за шаг можно брать больше, и мир
+## появляется быстрее.
+const WARMUP_CHUNKS_PER_STEP := 4
 ## Сколько секунд машина может лежать на крыше, прежде чем игра сама вернёт её
 ## на дорогу: перевёрнутая машина иначе остаётся перевёрнутой навсегда, потому
 ## что игрок в этом положении обычно ничего не может сделать.
 const FLIP_RECOVERY_TIME_S := 4.0
+## Сколько секунд машина может стоять без опоры, прежде чем игра вернёт её на
+## дорогу (застревание в геометрии, проваливание сквозь тонкую коллизию).
+const STUCK_RECOVERY_TIME_S := 3.0
+## LOD внешнего вида для всех машин сцены, не только полицейских: обычные
+## машины мира тоже подробные модели, и в городе их десятки.  Машина игрока
+## всегда остаётся на полном уровне.
+const WORLD_CAR_LOD_INTERVAL_S := 0.5
+const WORLD_CAR_LOD_MID_M := 45.0
+const WORLD_CAR_LOD_FAR_M := 110.0
 
 var world: WorldStreamer = null
 var player: PlayerCar = null
@@ -37,11 +49,14 @@ var player_start_position: Vector3 = Vector3.ZERO
 
 var _quality: GraphicsQuality = null
 var _upside_down_time_s: float = 0.0
+var _stuck_time_s: float = 0.0
+var _car_lod_timer_s: float = 0.0
 
 
 func _ready() -> void:
 	randomize()
 	_quality = Settings.preset()
+	Settings.apply_orientation()
 	Settings.apply_renderer_settings()
 	Settings.apply_audio_bus_volumes()
 	_build_environment()
@@ -63,12 +78,39 @@ func _build_environment() -> void:
 	sun.light_energy = 1.12
 	sun.light_color = Color(1.0, 0.96, 0.88)
 	sun.rotation_degrees = Vector3(-46.0, 38.0, 0.0)
-	sun.shadow_enabled = true
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
-	sun.directional_shadow_max_distance = 120.0
 	sun.shadow_bias = 0.06
 	sun.shadow_normal_bias = 1.4
 	add_child(sun)
+	apply_quality(_quality)
+	Settings.quality_changed.connect(apply_quality)
+	Perf.scalers_changed.connect(_on_scalers_changed)
+
+
+## Автоадаптация (Perf) снижает качество, когда телефон не держит кадр: здесь
+## её решения доходят до рендера - тени, разрешение и радиус стриминга.
+func _on_scalers_changed(_value: float) -> void:
+	if sun != null and _quality != null:
+		sun.shadow_enabled = _quality.shadows_enabled and Perf.shadows_allowed
+	Settings.apply_render_scale(_quality.render_scale * Perf.resolution_scale if _quality != null else 1.0)
+	if world != null:
+		world.apply_quality(_quality)
+
+
+## Применяет пресет качества к освещению.  Раньше тени были включены всегда
+## (sun.shadow_enabled = true без оглядки на пресет), поэтому даже на "Low" с
+## выключенными тенями телефон платил за карту теней 2048 и мягкие фильтры -
+## на слабом GPU это главный расход кадра.
+func apply_quality(quality: GraphicsQuality) -> void:
+	if quality == null or sun == null:
+		return
+	sun.shadow_enabled = quality.shadows_enabled and Perf.shadows_allowed
+	sun.directional_shadow_max_distance = quality.shadow_distance_m
+	sun.directional_shadow_blend_splits = quality.shadow_filter_quality > 0
+	RenderingServer.directional_shadow_atlas_set_size(
+		maxi(quality.shadow_map_size, 512), quality.shadow_filter_quality > 0
+	)
+	Settings.apply_renderer_settings()
 
 
 func _build_interface() -> void:
@@ -132,13 +174,41 @@ func _warmup_world() -> void:
 	spawn_manager.set_seed(Config.world.seed)
 	var start := spawn_manager.find_player_start(Config.gameplay.player_start_position)
 	player_start_position = start["point"]
-	var total_steps := 10
+	# Заставка ждёт только маленькое кольцо вокруг машины: остальное догружается
+	# в игре.  Раньше ожидание растягивалось на минуты, потому что загрузка
+	# ждала чанки в радиусе трети обзора.
+	var total_steps := 8
 	for step in range(total_steps):
-		if world.is_ready_around(player_start_position, world.view_radius * 0.35) and step >= 2:
+		if world.is_ready_around(player_start_position, world.near_radius * 0.55) and step >= 2:
 			break
 		world.warmup(player_start_position, WARMUP_CHUNKS_PER_STEP)
 		menu.report_loading(float(step + 1) / float(total_steps), world.loaded_chunk_count())
 		await get_tree().process_frame
+
+
+## Поднимает точку появления, пока габарит машины не окажется свободен: иначе
+## машина появляется внутри забора, столба или дома и застревает там навсегда.
+## Проверка идёт запросом формы по слою мира; если места нет и выше, машина
+## просто ставится на пару метров над дорогой - падение безопаснее застревания.
+func _free_spawn_position(candidate: Vector3) -> Vector3:
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return candidate
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(1.9, 1.1, 4.6)
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = shape
+	query.collision_mask = 1
+	query.margin = 0.05
+	var lift := 0.0
+	for attempt in range(6):
+		query.transform = Transform3D(Basis(), candidate + Vector3.UP * lift)
+		var hits := space.intersect_shape(query, 1)
+		if hits.is_empty():
+			return candidate + Vector3.UP * lift
+		lift += 0.8
+	print("       (место появления занято, машина поднята на %.1f м)" % lift)
+	return candidate + Vector3.UP * lift
 
 
 func _spawn_player() -> void:
@@ -160,6 +230,7 @@ func _spawn_player() -> void:
 	add_child(player)
 	player.set_physics_process(true)
 	player.set_input_source(touch_controls)
+	spawn_position = _free_spawn_position(spawn_position)
 	player.global_position = spawn_position
 	player.rotation = Vector3(0.0, yaw, 0.0)
 	var roads := world.road_network()
@@ -305,6 +376,7 @@ func _process(delta: float) -> void:
 	if player == null or not is_instance_valid(player):
 		return
 	_check_flip_recovery(delta)
+	_update_world_car_lod(delta)
 	if touch_controls != null:
 		var camera_delta: Vector2 = touch_controls.consume_camera_drag()
 		if camera_delta != Vector2.ZERO and chase_camera != null:
@@ -319,6 +391,24 @@ func _process(delta: float) -> void:
 ## A car that ended up on its roof cannot be driven any more: after a few
 ## seconds of being upside down (and with no wheel touching the ground) the game
 ## puts it back onto the road, exactly like the "reset car" button does.
+func _update_world_car_lod(delta: float) -> void:
+	_car_lod_timer_s -= delta
+	if _car_lod_timer_s > 0.0:
+		return
+	_car_lod_timer_s = WORLD_CAR_LOD_INTERVAL_S
+	for node in get_tree().get_nodes_in_group("world_cars"):
+		var car := node as VehicleController
+		if car == null or not is_instance_valid(car):
+			continue
+		var distance := car.global_position.distance_to(player.global_position)
+		var lod := 0
+		if distance > WORLD_CAR_LOD_FAR_M:
+			lod = 2
+		elif distance > WORLD_CAR_LOD_MID_M:
+			lod = 1
+		car.set_visual_lod(lod)
+
+
 func _check_flip_recovery(delta: float) -> void:
 	var upside_down := player.global_basis.y.dot(Vector3.UP) < -0.15
 	if upside_down and player.grounded_wheels == 0:
@@ -327,8 +417,27 @@ func _check_flip_recovery(delta: float) -> void:
 		_upside_down_time_s = 0.0
 	if _upside_down_time_s >= FLIP_RECOVERY_TIME_S:
 		_upside_down_time_s = 0.0
-		if player.has_method("recover_to_road"):
-			player.call("recover_to_road")
+		_recover_player()
+		return
+	# Страховка от проваливания: если машина оказалась ниже рельефа (например,
+	# проскочила тонкую коллизию на скорости) или стоит без опоры, игра
+	# возвращает её на дорогу - раньше в этом случае помогала только кнопка
+	# "Вернуть машину", а в погоне игрок о ней не вспоминает.
+	var ground := world.height_at(player.global_position.x, player.global_position.z) if world != null else 0.0
+	var buried := player.global_position.y < ground - 1.2
+	var stranded := player.grounded_wheels == 0 and absf(player.forward_speed_ms()) < 1.5
+	if buried:
+		_stuck_time_s = STUCK_RECOVERY_TIME_S
+	else:
+		_stuck_time_s = _stuck_time_s + delta if stranded else 0.0
+	if _stuck_time_s >= STUCK_RECOVERY_TIME_S:
+		_stuck_time_s = 0.0
+		_recover_player()
+
+
+func _recover_player() -> void:
+	if player != null and is_instance_valid(player):
+		player.call("recover_to_road")
 
 
 func status() -> Dictionary:

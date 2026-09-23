@@ -29,33 +29,31 @@ func material_names() -> Array:
 	return _groups.keys()
 
 
+## Вершины копятся в обычных Array: это ссылочный тип, поэтому запись идёт на
+## месте.  Раньше здесь лежали Packed-массивы (типы-значения), и каждая вершина
+## четыре раза копировала весь массив группы ("write the local copy back") - на
+## городской чанк это десятки миллионов копий и секунды генерации на телефоне.
+## В Packed-массивы данные переводятся один раз, в commit().
 func _group(material_name: String) -> Array:
 	if not _groups.has(material_name):
 		_groups[material_name] = [
-			PackedVector3Array(),  # vertices
-			PackedVector3Array(),  # normals
-			PackedColorArray(),    # colors
-			PackedVector2Array(),  # uvs
+			[],  # vertices
+			[],  # normals
+			[],  # colors
+			[],  # uvs
 		]
 	return _groups[material_name]
 
 
 func _vertex(group: Array, position: Vector3, normal: Vector3, uv: Vector2, color: Color) -> void:
-	# Packed arrays are value types: `group[0].push_back(x)` or a bare `as` cast
-	# would push into a *copy* and the surface would stay empty.  Write the local
-	# copy back into the group array instead.
-	var vertices: PackedVector3Array = group[0]
-	var normals: PackedVector3Array = group[1]
-	var colors: PackedColorArray = group[2]
-	var uvs: PackedVector2Array = group[3]
+	var vertices: Array = group[0]
 	vertices.push_back(position)
+	var normals: Array = group[1]
 	normals.push_back(normal)
+	var colors: Array = group[2]
 	colors.push_back(color)
+	var uvs: Array = group[3]
 	uvs.push_back(uv)
-	group[0] = vertices
-	group[1] = normals
-	group[2] = colors
-	group[3] = uvs
 	vertex_count += 1
 
 
@@ -509,18 +507,11 @@ func append_builder(other: MeshBuilder) -> void:
 	for material_name in other._groups.keys():
 		var source: Array = other._groups[material_name]
 		var target := _group(String(material_name))
-		var vertices: PackedVector3Array = target[0]
-		var normals: PackedVector3Array = target[1]
-		var colors: PackedColorArray = target[2]
-		var uvs: PackedVector2Array = target[3]
-		vertices.append_array(source[0])
-		normals.append_array(source[1])
-		colors.append_array(source[2])
-		uvs.append_array(source[3])
-		target[0] = vertices
-		target[1] = normals
-		target[2] = colors
-		target[3] = uvs
+		# append_array по ссылочным Array тоже идёт на месте (без копий).
+		(target[0] as Array).append_array(source[0] as Array)
+		(target[1] as Array).append_array(source[1] as Array)
+		(target[2] as Array).append_array(source[2] as Array)
+		(target[3] as Array).append_array(source[3] as Array)
 	triangle_count += other.triangle_count
 	vertex_count += other.vertex_count
 
@@ -532,15 +523,15 @@ func commit() -> ArrayMesh:
 	var mesh := ArrayMesh.new()
 	for material_name in _groups.keys():
 		var group: Array = _groups[material_name]
-		var vertices: PackedVector3Array = group[0]
-		if vertices.is_empty():
+		if (group[0] as Array).is_empty():
 			continue
+		# Единственное преобразование в Packed-массивы за всю сборку меша.
 		var arrays: Array = []
 		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = vertices
-		arrays[Mesh.ARRAY_NORMAL] = group[1]
-		arrays[Mesh.ARRAY_COLOR] = group[2]
-		arrays[Mesh.ARRAY_TEX_UV] = group[3]
+		arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array(group[0])
+		arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array(group[1])
+		arrays[Mesh.ARRAY_COLOR] = PackedColorArray(group[2])
+		arrays[Mesh.ARRAY_TEX_UV] = PackedVector2Array(group[3])
 		var surface_index := mesh.get_surface_count()
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		mesh.surface_set_material(surface_index, Assets.material(String(material_name)))

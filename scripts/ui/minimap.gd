@@ -89,12 +89,24 @@ func _draw() -> void:
 	var center := player.global_position
 	var forward: Vector3 = player.call("forward_direction") if player.has_method("forward_direction") else Vector3.FORWARD
 	var yaw := atan2(forward.x, forward.z)
-	# clip everything to the map square
+	# Обрезка по рамке карты: раньше ломаные уходили за пределы виджета (дороги
+	# рисовались поверх HUD).  Каждая точка ограничивается прямоугольником карты,
+	# а отрезки, полностью лежащие снаружи, не рисуются вовсе.
+	var frame := Rect2(Vector2(2.0, 2.0), size - Vector2(4.0, 4.0))
 	for i in range(_cache.size()):
 		var polyline := _cache[i]
 		var mapped := PackedVector2Array()
+		var inside_any := false
 		for point in polyline:
-			mapped.append(world_to_map(point.x, point.y, center, yaw))
+			var mapped_point := world_to_map(point.x, point.y, center, yaw)
+			if frame.has_point(mapped_point):
+				inside_any = true
+			mapped.append(Vector2(
+				clampf(mapped_point.x, frame.position.x, frame.end.x),
+				clampf(mapped_point.y, frame.position.y, frame.end.y)
+			))
+		if not inside_any:
+			continue
 		var road_type := _cache_types[i]
 		var color := highway_color if road_type == RoadNetwork.RoadType.HIGHWAY or road_type == RoadNetwork.RoadType.RAMP else road_color
 		var width := 4.0 if color == highway_color else 2.4
@@ -105,6 +117,8 @@ func _draw() -> void:
 			if not is_instance_valid(car):
 				continue
 			var point := world_to_map(car.global_position.x, car.global_position.z, center, yaw)
+			if not frame.has_point(point):
+				continue
 			draw_circle(point, 4.0, police_color)
 	# player arrow at the centre (always pointing up)
 	var center_point := size * 0.5

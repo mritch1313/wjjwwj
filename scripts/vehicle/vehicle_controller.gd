@@ -30,6 +30,11 @@ signal airtime_started()
 signal landed(impact_speed_ms: float)
 signal reset_done(position: Vector3)
 
+## Прижим к земле на скорости: машина, потерявшая опору (край чанка, пропуск в
+## тонкой коллизии), получает небольшое усилие вниз, чтобы снова найти землю, а
+## не летела по инерции.  Срабатывает только когда колёса уже не касаются земли.
+const STICK_DOWN_MIN_SPEED_MS := 12.0
+const STICK_DOWN_FORCE_N := 2600.0
 const WHEEL_COUNT := 4
 const GROUND_MASK := 1  # physics layer "world"
 
@@ -164,6 +169,7 @@ func _physics_process(delta: float) -> void:
 		return
 	_update_steering(delta)
 	_update_gearbox(delta)
+	_apply_ground_stick(delta)
 	var space := get_world_3d().direct_space_state
 	var body_transform := global_transform
 	var up := body_transform.basis.y.normalized()
@@ -550,6 +556,15 @@ func distance_to_road() -> float:
 ## --------------------------------------------------------------------- reset
 ## The only place that writes the transform: an explicit respawn onto the road
 ## (falls out of the world, stuck against scenery, "reset car" button).
+func _apply_ground_stick(_delta: float) -> void:
+	if grounded_wheels > 0:
+		return
+	var horizontal := Vector2(linear_velocity.x, linear_velocity.z).length()
+	if horizontal < STICK_DOWN_MIN_SPEED_MS:
+		return
+	apply_central_force(Vector3.DOWN * STICK_DOWN_FORCE_N)
+
+
 func reset_car(onto_road: bool = true) -> void:
 	_recovering = true
 	var target := global_position

@@ -12,7 +12,10 @@ enum SteeringMode { BUTTONS, WHEEL }
 
 const CONFIG_PATH := "user://settings.cfg"
 
-var quality_index: int = 1
+## По умолчанию на телефоне включается LOW: телефон неизвестен, а пресет
+## "Medium" с тенями 2048 и дальностью 448 м валит слабые устройства до
+## единиц кадров.  Игрок поднимает качество сам в меню, выбор сохраняется.
+var quality_index: int = 0 if OS.has_feature("mobile") else 1
 var language: String = "ru"
 
 var camera_sensitivity: float = 0.30
@@ -38,6 +41,9 @@ var police_count: int = 3
 var ai_level: int = 2
 var player_paint_index: int = 0
 
+## Ориентация экрана: 0 - как задано в проекте (портрет), 1 - всегда портрет,
+## 2 - всегда ландшафт.
+var orientation_mode: int = 0
 var _quality: GraphicsQuality = null
 
 
@@ -94,6 +100,43 @@ func apply_renderer_settings() -> void:
 	RenderingServer.directional_soft_shadow_filter_set_quality(q.shadow_filter_quality)
 	RenderingServer.positional_soft_shadow_filter_set_quality(q.shadow_filter_quality)
 	Perf.set_quality_scale(q)
+	apply_render_scale(q.render_scale)
+
+
+## Масштаб рендера для renderer'а совместимости (мобильный по умолчанию в этом
+## проекте).  У Compatibility нет RenderingDevice, поэтому scaling_3d_scale
+## игнорируется, а игре на слабом телефоне нужно рисовать меньше пикселей:
+## разрешение окна уменьшается, картинка растягивается обратно при выводе.
+func apply_render_scale(scale: float) -> void:
+	var window := get_window()
+	if window == null:
+		return
+	var base := Vector2i(
+		ProjectSettings.get_setting("display/window/size/viewport_width", 720),
+		ProjectSettings.get_setting("display/window/size/viewport_height", 1280)
+	)
+	var target := Vector2i(
+		maxi(int(float(base.x) * clampf(scale, 0.4, 1.0)), 320),
+		maxi(int(float(base.y) * clampf(scale, 0.4, 1.0)), 320)
+	)
+	if window.content_scale_size != target:
+		window.content_scale_size = target
+
+
+## ------------------------------------------------------------------ экран --
+## Ориентация выбирается игроком: 0 - как в проекте (портрет), 1 - портрет,
+## 2 - ландшафт.  На Android применяется сразу, на других платформах значение
+## сохраняется (там окно задаёт пользователь).
+func apply_orientation() -> void:
+	var target := DisplayServer.SCREEN_PORTRAIT
+	match orientation_mode:
+		2:
+			target = DisplayServer.SCREEN_LANDSCAPE
+		1:
+			target = DisplayServer.SCREEN_PORTRAIT
+		_:
+			target = DisplayServer.SCREEN_SENSOR
+	DisplayServer.screen_set_orientation(target)
 
 
 func apply_audio_bus_volumes() -> void:
@@ -127,7 +170,8 @@ func _load() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(CONFIG_PATH) != OK:
 		return
-	quality_index = int(cfg.get_value("display", "quality", 1))
+	quality_index = int(cfg.get_value("display", "quality", quality_index))
+	orientation_mode = int(cfg.get_value("display", "orientation", 0))
 	language = String(cfg.get_value("display", "language", "ru"))
 	camera_sensitivity = float(cfg.get_value("camera", "sensitivity", 0.30))
 	camera_invert_y = bool(cfg.get_value("camera", "invert_y", false))
@@ -152,6 +196,7 @@ func _load() -> void:
 func _save() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("display", "quality", quality_index)
+	cfg.set_value("display", "orientation", orientation_mode)
 	cfg.set_value("display", "language", language)
 	cfg.set_value("camera", "sensitivity", camera_sensitivity)
 	cfg.set_value("camera", "invert_y", camera_invert_y)

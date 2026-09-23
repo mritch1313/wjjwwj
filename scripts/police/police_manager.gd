@@ -22,9 +22,9 @@ signal player_escaped(seconds_hidden: float)
 const POLICE_SEED_SALT := 9176
 ## Границы уровней детализации полицейских машин по расстоянию до игрока:
 ## ближе 120 м - полная модель, дальше 260 м - силуэт.
-const LOD_MID_DISTANCE_M := 120.0
-const LOD_FAR_DISTANCE_M := 260.0
-const LOD_CHECK_INTERVAL_S := 0.5
+const LOD_MID_DISTANCE_M := 45.0
+const LOD_FAR_DISTANCE_M := 110.0
+const LOD_CHECK_INTERVAL_S := 0.4
 
 var pursuit_active: bool = false
 var ai_level: int = 2

@@ -287,6 +287,9 @@ func _update_pursuit_panel() -> void:
 		_arrest_bar.color = Color(0.5, 0.6, 0.75, 0.6)
 
 
+## Подробная строка производительности: сколько рисуется, сколько чанков
+## висит, что решила автоадаптация.  Нужна, чтобы оптимизировать по фактам, а
+## не по догадкам (доступна по кнопке отладки в меню).
 func _update_debug() -> void:
 	_debug_lines = PackedStringArray()
 	_debug_lines.append("%s %d" % [L10n.t("fps"), Engine.get_frames_per_second()])
@@ -295,6 +298,16 @@ func _update_debug() -> void:
 		var world_stats: Dictionary = Game.world.call("stats")
 		_debug_lines.append("%s %d  треугольники %d" % [
 			L10n.t("chunks"), int(world_stats.get("chunks", 0)), int(world_stats.get("triangles", 0))
+		])
+		_debug_lines.append("очередь чанков %d  генераций %d  выгружено %d" % [
+			int(world_stats.get("pending", 0)), int(world_stats.get("generated", 0)),
+			int(world_stats.get("freed", 0))
+		])
+		var draw_calls: int = RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)
+		var objects: int = RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_OBJECTS_IN_FRAME)
+		_debug_lines.append("объектов %d  вызовов отрисовки %d" % [objects, draw_calls])
+		_debug_lines.append("качество: тени %s  разрешение %.2f  мир %.2f  LOD %.2f" % [
+			"да" if Perf.shadows_allowed else "нет", Perf.resolution_scale, Perf.prop_density_scale, Perf.lod_scale
 		])
 	if player != null and is_instance_valid(player):
 		var car := player.status()

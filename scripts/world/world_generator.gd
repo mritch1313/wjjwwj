@@ -193,9 +193,16 @@ func _build_terrain(builder: MeshBuilder, rect: Rect2, tier: int, rng: RandomNum
 ## Only the near/mid chunks get ground collision (the far ones are never driven
 ## on), and the faces are emitted in world space, exactly like the terrain mesh.
 func _build_ground_collision(rect: Rect2, tier: int, origin: Vector3) -> Dictionary:
-	if tier > TIER_MID:
-		return {}
+	# Коллизия земли нужна на ВСЕХ уровнях: дальний чанк тоже находится внутри
+	# радиуса обзора, и машина на скорости успевает туда доехать раньше, чем
+	# стример повысит его уровень.  Раньше у дальних чанков коллизии не было
+	# вовсе - машина проваливалась сквозь землю "в пустоте" между чанками.
 	var step := terrain_quad_step(tier) if tier == TIER_NEAR else maxf(terrain_quad_step(tier), 8.0)
+	if tier > TIER_MID:
+		# Дальний уровень: грубая сетка (~24 м). Машина на ней едет по крупному
+		# рельефу, а точную геометрию даёт ближний чанк, который подгружается
+		# быстрее, чем игрок успевает доехать.
+		step = maxf(config.terrain_quad_far, 16.0)
 	var count := maxi(int(ceil(config.chunk_size_m / step)), 1)
 	var cell := config.chunk_size_m / float(count)
 	var heights := PackedFloat32Array()
