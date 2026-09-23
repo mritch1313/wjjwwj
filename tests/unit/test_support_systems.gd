@@ -84,6 +84,40 @@ func test_vehicle_model_factory_builds_a_car_body() -> void:
 	assert_between(box.size.y, 0.9, 2.2, "высота машины реалистична")
 
 
+## LOD машины должен реально снижать нагрузку, а не быть галочкой: каждый
+## следующий уровень обязан быть дешевле предыдущего на измеримую величину.
+func test_vehicle_visual_lod_reduces_the_model() -> void:
+	var counts: Array[int] = []
+	for lod in [0, 1, 2]:
+		var builder := MeshBuilder.new()
+		VehicleModelFactory.build_car(builder, Transform3D(), Config.vehicle_police,
+			VehicleModelFactory.Role.POLICE, lod, test_rng(7), "car_body_police", true)
+		builder.commit()
+		counts.append(builder.triangle_count)
+	print("       LOD машины: lod0 %d, lod1 %d, lod2 %d треугольников" % [counts[0], counts[1], counts[2]])
+	assert_lt(float(counts[1]), float(counts[0]), "LOD1 легче LOD0")
+	assert_lt(float(counts[2]), float(counts[1]) * 0.7, "LOD2 (силуэт) заметно легче LOD1")
+	assert_lt(float(counts[2]), float(counts[0]) * 0.35, "LOD2 дешевле LOD0 минимум втрое")
+	# колесо тоже упрощается (14 сегментов против 6)
+	var rich := MeshBuilder.new()
+	VehicleModelFactory.build_wheel(rich, Config.vehicle_police, 0)
+	rich.commit()
+	var cheap := MeshBuilder.new()
+	VehicleModelFactory.build_wheel(cheap, Config.vehicle_police, 2)
+	cheap.commit()
+	assert_lt(float(cheap.triangle_count), float(rich.triangle_count), "колесо дальнего LOD дешевле")
+
+
+func test_police_visual_lod_follows_the_distance() -> void:
+	assert_eq(PoliceManager.visual_lod_for_distance(10.0), 0, "рядом с игроком - полная модель")
+	assert_eq(PoliceManager.visual_lod_for_distance(PoliceManager.LOD_MID_DISTANCE_M), 0,
+		"на границе среднего уровня модель ещё полная")
+	assert_eq(PoliceManager.visual_lod_for_distance(PoliceManager.LOD_MID_DISTANCE_M + 1.0), 1,
+		"за границей - средний уровень")
+	assert_eq(PoliceManager.visual_lod_for_distance(PoliceManager.LOD_FAR_DISTANCE_M + 1.0), 2,
+		"далеко - силуэт")
+
+
 func test_object_pool_reuses_nodes() -> void:
 	var created := [0]
 	var pool := ObjectPool.new(func() -> Node:

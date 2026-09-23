@@ -89,6 +89,35 @@ static func build_car(
 	else:
 		paint_tint = Color(0.98, 0.98, 1.0)
 
+	# --- LOD2: силуэт для дальних машин.  Полный набор деталей (стёкла, фары,
+	# зеркала, решётки, полосы, мигалка) стоит сотни треугольников и с 300 м
+	# неразличим, поэтому остаётся узнаваемый профиль: корпус, кабина и колёса.
+	if lod >= 2:
+		var lower_height := size.y * 0.55
+		var upper_height := maxf(size.y - body_bottom - lower_height, 0.05)
+		builder.add_box(
+			material,
+			origin * _t(Vector3(0.0, body_bottom + lower_height * 0.5, 0.0)),
+			Vector3(size.x, lower_height, size.z), paint_tint
+		)
+		builder.add_box(
+			material,
+			origin * _t(Vector3(0.0, body_bottom + lower_height + upper_height * 0.5, size.z * 0.02)),
+			Vector3(size.x * 0.86, upper_height, size.z * 0.46), paint_tint
+		)
+		if include_wheels:
+			for center in wheel_centres:
+				builder.add_cylinder(
+					"car_tire",
+					origin * _t(center, 0.0, 1.0) * Transform3D(Basis(Vector3.FORWARD, PI * 0.5), Vector3.ZERO),
+					wheel_radius, wheel_radius, wheel_width, 6, Color(0.9, 0.9, 0.9)
+				)
+		return {
+			"wheel_centres": wheel_centres,
+			"wheel_radius": wheel_radius,
+			"size": size,
+			"material": material,
+		}
 	var footprint := _footprint(size.z, size.x, 0.86, 0.92, 0.34)
 	# --- main body (slightly tapered prism reads as a real car silhouette)
 	builder.add_prism(

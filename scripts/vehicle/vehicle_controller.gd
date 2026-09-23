@@ -66,6 +66,10 @@ var grounded_wheels: int = 0
 var wheelspin: bool = false
 var abs_active: bool = false
 var total_distance_m: float = 0.0
+## Уровень детализации внешнего вида (0 - полный, 1 - без стёкол и фар, 2 -
+## силуэт).  Физика от него не зависит вообще: это только меш, и меняется он
+## лишь для машин вокруг игрока (см. PoliceManager._update_visual_lod).
+var visual_lod: int = 0
 var odometer_start: Vector3 = Vector3.ZERO
 var _last_forward_speed: float = 0.0
 var _visual_root: Node3D = null
@@ -628,10 +632,13 @@ func _build_body_mesh() -> void:
 		Transform3D(),
 		livery_config,
 		vehicle_role,
-		0,
+		visual_lod,
 		MathUtils.rng_for(Vector2i(11, 13), 3),
 		"",
-		true
+		# Колёса в кузов НЕ запекаются: рядом строятся отдельные анимированные
+		# колёса (WheelPivot*), и раньше одна и та же резина рисовалась дважды -
+		# лишние треугольники и мерцание совпадающих поверхностей.
+		false
 	)
 	var mesh := builder.commit()
 	var instance := MeshInstance3D.new()
@@ -643,8 +650,14 @@ func _build_body_mesh() -> void:
 
 
 func _build_wheel_visuals() -> void:
+	# Пересборка вида (смена уровня детализации, покраска) не должна копить
+	# старые колёса: сносим прежние узлы, как это делает _build_body_mesh.
+	for pivot in _wheel_visuals:
+		if is_instance_valid(pivot):
+			pivot.queue_free()
+	_wheel_visuals.clear()
 	var builder := MeshBuilder.new()
-	VehicleModelFactory.build_wheel(builder, config)
+	VehicleModelFactory.build_wheel(builder, config, visual_lod)
 	var wheel_mesh := builder.commit()
 	for index in range(WHEEL_COUNT):
 		var pivot := Node3D.new()
@@ -659,6 +672,19 @@ func _build_wheel_visuals() -> void:
 
 func rebuild_visual() -> void:
 	_build_body_mesh()
+	_build_wheel_visuals()
+
+
+## Переключает уровень детализации внешнего вида (физика не меняется).  Так
+## машина вдали от игрока перестаёт платить за стёкла, фары и подробные диски,
+## а рядом с игроком остаётся максимально подробной - как требует ТЗ
+## ("полицейские рядом: средняя/высокая детализация, дальние машины: низкая").
+func set_visual_lod(level: int) -> void:
+	var clamped := clampi(level, 0, 2)
+	if clamped == visual_lod:
+		return
+	visual_lod = clamped
+	rebuild_visual()
 
 
 ## ------------------------------------------------------- static physics math

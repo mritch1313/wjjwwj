@@ -20,6 +20,11 @@ signal player_caught()
 signal player_escaped(seconds_hidden: float)
 
 const POLICE_SEED_SALT := 9176
+## Границы уровней детализации полицейских машин по расстоянию до игрока:
+## ближе 120 м - полная модель, дальше 260 м - силуэт.
+const LOD_MID_DISTANCE_M := 120.0
+const LOD_FAR_DISTANCE_M := 260.0
+const LOD_CHECK_INTERVAL_S := 0.5
 
 var pursuit_active: bool = false
 var ai_level: int = 2
@@ -47,6 +52,7 @@ var total_arrests: int = 0
 var total_escapes: int = 0
 var spawn_failures: int = 0
 
+var _lod_timer_s: float = 0.0
 var _role_timer_s: float = 0.0
 var _ai_accumulator: float = 0.0
 var _rng := RandomNumberGenerator.new()
@@ -141,9 +147,37 @@ func _physics_process(delta: float) -> void:
 			continue
 		context["role"] = roles[i] if i < roles.size() else PoliceRole.Type.CHASE
 		brain.update(delta, context)
+	_update_visual_lod()
 	_assign_roles_if_due(delta, context)
 	_update_arrest(delta)
 	_update_escape(delta)
+
+
+## Какая детальность внешнего вида положена машине на таком расстоянии от
+## игрока.  Вынесено отдельной функцией, чтобы правило проверялось тестом.
+static func visual_lod_for_distance(distance_m: float) -> int:
+	if distance_m > LOD_FAR_DISTANCE_M:
+		return 2
+	if distance_m > LOD_MID_DISTANCE_M:
+		return 1
+	return 0
+
+
+## LOD внешнего вида полицейских машин по расстоянию до игрока.  Проверяется не
+## каждый кадр (пересборка меша - дорогая операция), а по таймеру: за полсекунды
+## дистанция меняется незначительно, зато лишних перестроений меша нет.
+func _update_visual_lod() -> void:
+	_lod_timer_s -= get_physics_process_delta_time()
+	if _lod_timer_s > 0.0:
+		return
+	_lod_timer_s = LOD_CHECK_INTERVAL_S
+	if player == null or not is_instance_valid(player):
+		return
+	for car in cars:
+		if not is_instance_valid(car):
+			continue
+		var distance := car.global_position.distance_to(player.global_position)
+		car.set_visual_lod(visual_lod_for_distance(distance))
 
 
 ## The pursuit grows: police cars keep arriving while the player is on the run,
