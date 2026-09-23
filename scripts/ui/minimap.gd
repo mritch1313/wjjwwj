@@ -24,7 +24,7 @@ var police_color: Color = Color(0.95, 0.25, 0.2)
 var water_color: Color = Color(0.2, 0.38, 0.62, 0.5)
 var border_color: Color = Color(0.7, 0.78, 0.9, 0.5)
 
-var _cache: Array[PackedVector2Array] = PackedVector2Array() as Array[PackedVector2Array]
+var _cache: Array[PackedVector2Array] = []
 var _cache_types: PackedInt32Array = PackedInt32Array()
 var _refresh_timer: float = 0.0
 var _cache_center: Vector3 = Vector3(1e9, 0.0, 1e9)

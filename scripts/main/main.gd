@@ -17,6 +17,10 @@ extends Node3D
 ##   4. everything else (car, camera, HUD, police) and the menu.
 
 const WARMUP_CHUNKS_PER_STEP := 3
+## Сколько секунд машина может лежать на крыше, прежде чем игра сама вернёт её
+## на дорогу: перевёрнутая машина иначе остаётся перевёрнутой навсегда, потому
+## что игрок в этом положении обычно ничего не может сделать.
+const FLIP_RECOVERY_TIME_S := 4.0
 
 var world: WorldStreamer = null
 var player: PlayerCar = null
@@ -32,6 +36,7 @@ var world_ready: bool = false
 var player_start_position: Vector3 = Vector3.ZERO
 
 var _quality: GraphicsQuality = null
+var _upside_down_time_s: float = 0.0
 
 
 func _ready() -> void:
@@ -158,11 +163,15 @@ func _spawn_player() -> void:
 	player.global_position = spawn_position
 	player.rotation = Vector3(0.0, yaw, 0.0)
 	var roads := world.road_network()
-	player.set_surface_provider(func(position: Vector3) -> int:
-		var road_surface := roads.road_surface_at(position) if roads != null else -1
+	# The controller asks the provider for the surface under a point as
+	# (x, z, height); a road wins over the terrain, which is what makes asphalt
+	# grippier than the field next to it in the physics.
+	player.set_surface_provider(func(x: float, z: float, height: float) -> int:
+		var probe := Vector3(x, height, z)
+		var road_surface := roads.road_surface_at(probe) if roads != null else -1
 		if road_surface >= 0:
 			return road_surface
-		return terrain.surface_at(position.x, position.z)
+		return terrain.surface_at(x, z)
 	)
 	player.set_road_provider(func(position: Vector3) -> Vector3:
 		if roads == null:
@@ -292,9 +301,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		hud.set_debug(not hud.show_debug)
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if player == null or not is_instance_valid(player):
 		return
+	_check_flip_recovery(delta)
 	if touch_controls != null:
 		var camera_delta: Vector2 = touch_controls.consume_camera_drag()
 		if camera_delta != Vector2.ZERO and chase_camera != null:
@@ -304,6 +314,21 @@ func _process(_delta: float) -> void:
 				-camera_delta.x * sensitivity * 0.01,
 				camera_delta.y * sensitivity * 0.01 * invert
 			)
+
+
+## A car that ended up on its roof cannot be driven any more: after a few
+## seconds of being upside down (and with no wheel touching the ground) the game
+## puts it back onto the road, exactly like the "reset car" button does.
+func _check_flip_recovery(delta: float) -> void:
+	var upside_down := player.global_basis.y.dot(Vector3.UP) < -0.15
+	if upside_down and player.grounded_wheels == 0:
+		_upside_down_time_s += delta
+	else:
+		_upside_down_time_s = 0.0
+	if _upside_down_time_s >= FLIP_RECOVERY_TIME_S:
+		_upside_down_time_s = 0.0
+		if player.has_method("recover_to_road"):
+			player.call("recover_to_road")
 
 
 func status() -> Dictionary:

@@ -91,6 +91,15 @@ func _ready() -> void:
 	collision_layer = 1 << 2  # "player_car" by default; PoliceCarFactory changes it
 	collision_mask = GROUND_MASK | (1 << 4)
 	can_sleep = false
+	# Кузов - это коробка, и с трением по умолчанию (1.0) касание стенки на
+	# скорости превращает движение в кувырок: машина "спотыкается" о стену.
+	# Низкое трение коробки - стандартный приём для аркадной физики: кузов
+	# скользит вдоль препятствия, а сцепление делают шины.
+	if physics_material_override == null:
+		var chassis_material := PhysicsMaterial.new()
+		chassis_material.friction = 0.25
+		chassis_material.bounce = 0.0
+		physics_material_override = chassis_material
 	_setup_collision()
 	_setup_wheels()
 	_build_body_mesh()
@@ -110,7 +119,10 @@ func _setup_collision() -> void:
 	var node := CollisionShape3D.new()
 	node.name = "BodyCollision"
 	node.shape = shape
-	node.position = Vector3(0.0, config.body_size.y * 0.5 - config.suspension_rest_length_m - config.wheel_radius_m, 0.0)
+	# The chassis box starts just above the ground clearance line and grows up:
+	# it must never reach the contact plane, otherwise the car rests on its belly
+	# and the suspension stays unloaded (the wheels would simply dangle).
+	node.position = Vector3(0.0, config.ground_clearance_m + config.body_size.y * 0.5, 0.0)
 	add_child(node)
 
 
@@ -547,7 +559,10 @@ func reset_car(onto_road: bool = true) -> void:
 			var direction := ahead - point
 			if direction.length() > 2.0 and direction.length() < 40.0:
 				yaw = atan2(direction.x, direction.z)
-	target.y += config.suspension_rest_length_m + config.wheel_radius_m + 0.35
+	# Начало координат машины - плоскость контакта, поэтому ставим её чуть выше
+	# полотна и даём подвеске осесть (высоты старой системы координат здесь
+	# означали бы падение с высоты более метра).
+	target.y += config.ground_clearance_m + 0.3
 	global_transform = Transform3D(Basis(Vector3.UP, yaw), target)
 	linear_velocity = Vector3.ZERO
 	angular_velocity = Vector3.ZERO

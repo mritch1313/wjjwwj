@@ -216,8 +216,11 @@ func _build_chunk(cell: Vector2i, tier: int) -> void:
 		chunks[cell] = chunk
 		add_child(chunk)
 		chunks_generated_total += 1
-	var origin := config.chunk_origin(cell)
-	chunk.position = origin
+	# The builders emit world-space geometry (a shared global vertex grid is what
+	# keeps chunk seams from cracking), so the chunk node itself stays at the scene
+	# origin: moving it by the chunk origin would offset the geometry twice and the
+	# wheels would find no ground under the car.
+	chunk.position = Vector3.ZERO
 	chunk.apply_content(
 		cell, tier, data["meshes"], data["colliders"], int(data["buildings"]), float(data["generation_ms"])
 	)

@@ -75,7 +75,8 @@ static func build_car(
 		Vector3(half_track, wheel_radius, half_base),
 	]
 	var material := paint_material if not paint_material.is_empty() else paint_material_for(role)
-	var body_bottom := wheel_radius * 0.55
+	# Same number the collision box uses, so what is seen and what can be hit agree.
+	var body_bottom := config.ground_clearance_m
 	var body_height := size.y * 0.62
 	var roof_height := size.y - body_height * 0.55
 	var paint_tint := Color(1, 1, 1)

@@ -55,5 +55,7 @@ extends Resource
 ## world origin with a 145 m pitch).
 @export var player_start_position: Vector3 = Vector3(118.0, 0.0, 74.0)
 @export var player_start_search_radius_m: float = 420.0
-@export var reset_height_offset: float = 1.2
+## Насколько высоко над землёй появляется машина (начало координат машины -
+## плоскость контакта, поэтому 1.2 м означали бы падение с высоты больше метра).
+@export var reset_height_offset: float = 0.45
 @export var fall_out_of_world_height: float = -60.0

@@ -20,3 +20,7 @@ Thumbs.db
 # generated preview artefacts
 tools/world_dump.json
 tools/preview_*.png
+
+# python bytecode of the tools (never part of the project)
+__pycache__/
+*.pyc

@@ -200,6 +200,18 @@ const TEXTURE_MATERIALS := {
 	"marking_white": {"texture": "", "color": Color(0.92, 0.92, 0.88), "roughness": 0.7, "specular": 0.3},
 	"marking_yellow": {"texture": "", "color": Color(0.88, 0.76, 0.25), "roughness": 0.7, "specular": 0.3},
 	"asphalt_dark": {"texture": "road_asphalt_plain", "uv": Vector2(0.2, 0.2), "color": Color(0.75, 0.75, 0.78), "roughness": 0.92},
+
+	# ----------------------------------------------------- distant background
+	# The unstreamed LOD3 ring behind the world and the skyline it carries.  These
+	# are only ever seen from far away, so they are unshaded, take their colour
+	# from the vertex colour baked by BackgroundBuilder and cast no shadows - the
+	# cheapest thing a mobile GPU can draw thousands of metres away.
+	"terrain_background": {"texture": "", "color": Color(0.55, 0.6, 0.5), "roughness": 1.0, "specular": 0.0, "unshaded": true, "no_shadow": true},
+	"city_silhouette": {"texture": "", "color": Color(0.45, 0.48, 0.55), "roughness": 0.95, "specular": 0.1, "no_shadow": true},
+	"landmark_water_tank": {"texture": "", "color": Color(0.72, 0.74, 0.76), "roughness": 0.5, "specular": 0.5, "metallic": 0.35, "no_shadow": true},
+	"structure_metal": {"texture": "", "color": Color(0.45, 0.48, 0.5), "roughness": 0.45, "specular": 0.6, "metallic": 0.55},
+	"sign_blue": {"texture": "", "color": Color(0.1, 0.35, 0.72), "roughness": 0.5, "specular": 0.4},
+	"siren_light_red": {"texture": "", "color": Color(0.8, 0.1, 0.1), "emission": Color(1.0, 0.12, 0.1), "emission_energy": 1.8, "unshaded": true, "no_shadow": true},
 }
 
 var _materials: Dictionary = {}
@@ -285,7 +297,10 @@ func material(material_name: String) -> Material:
 	if bool(definition.get("unshaded", false)):
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	if bool(definition.get("no_shadow", false)):
-		mat.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		# В Godot 4 тени включаются у MeshInstance3D, а не у материала, поэтому
+		# признак хранится в метаданных: слой чанка (WorldChunk) и сборщики мешей
+		# читают его и выставляют cast_shadow у своего узла.
+		mat.set_meta("no_shadow", true)
 	if bool(definition.get("metal_back", false)):
 		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	_materials[material_name] = mat

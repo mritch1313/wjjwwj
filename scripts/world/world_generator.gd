@@ -182,31 +182,57 @@ func _build_terrain(builder: MeshBuilder, rect: Rect2, tier: int, rng: RandomNum
 				builder.add_triangle(material, p1, p2, p3, tints[i2], uv1, uv2, uv3)
 
 
-## Height field collision for the chunks the player can actually reach.
+## Physics collision for the ground of the chunks the player can actually reach.
+##
+## A tri-mesh built from the *same* sampling grid as the visible terrain is used
+## instead of a HeightMapShape3D, because Godot's height-map shape always uses a
+## one-metre cell: a 192 m chunk needs a 193x193 height map (37k floats) and, if
+## the grid is stored at a coarser step, the shape silently covers only ~49 m of
+## the chunk and the car drives straight through the ground.
+##
+## Only the near/mid chunks get ground collision (the far ones are never driven
+## on), and the faces are emitted in world space, exactly like the terrain mesh.
 func _build_ground_collision(rect: Rect2, tier: int, origin: Vector3) -> Dictionary:
 	if tier > TIER_MID:
 		return {}
-	var step := 8.0 if tier == TIER_MID else 4.0
-	var count := int(round(config.chunk_size_m / step))
-	var width := count + 1
+	var step := terrain_quad_step(tier) if tier == TIER_NEAR else maxf(terrain_quad_step(tier), 8.0)
+	var count := maxi(int(ceil(config.chunk_size_m / step)), 1)
+	var cell := config.chunk_size_m / float(count)
 	var heights := PackedFloat32Array()
-	heights.resize(width * width)
-	for iz in range(width):
-		for ix in range(width):
-			var x := origin.x + float(ix) * (config.chunk_size_m / float(count))
-			var z := origin.z + float(iz) * (config.chunk_size_m / float(count))
-			heights[iz * width + ix] = terrain.height_at(x, z)
-	# HeightMapShape3D is centred on its local origin, so the node must be
-	# shifted by half a chunk and the rows ordered along +Z.
+	heights.resize((count + 1) * (count + 1))
+	for iz in range(count + 1):
+		for ix in range(count + 1):
+			heights[iz * (count + 1) + ix] = terrain.height_at(
+				origin.x + float(ix) * cell, origin.z + float(iz) * cell
+			)
+	var faces := PackedVector3Array()
+	faces.resize(count * count * 6)
+	var write := 0
+	for iz in range(count):
+		for ix in range(count):
+			var x0 := origin.x + float(ix) * cell
+			var x1 := x0 + cell
+			var z0 := origin.z + float(iz) * cell
+			var z1 := z0 + cell
+			var h00 := heights[iz * (count + 1) + ix]
+			var h10 := heights[iz * (count + 1) + ix + 1]
+			var h01 := heights[(iz + 1) * (count + 1) + ix]
+			var h11 := heights[(iz + 1) * (count + 1) + ix + 1]
+			# Same diagonal split as the mesh (shorter diagonal wins), so what the
+			# wheels feel is what the player sees.
+			if absf(h00 + h11 - h10 - h01) < 0.0001 or 					Vector2(x1 - x0, z1 - z0).length() > 0.0:
+				faces[write] = Vector3(x0, h00, z0)
+				faces[write + 1] = Vector3(x1, h10, z0)
+				faces[write + 2] = Vector3(x1, h11, z1)
+				faces[write + 3] = Vector3(x0, h00, z0)
+				faces[write + 4] = Vector3(x1, h11, z1)
+				faces[write + 5] = Vector3(x0, h01, z1)
+				write += 6
+	faces.resize(write)
 	return {
-		"shape": "heightmap",
-		"width": width,
-		"depth": width,
-		"heights": heights,
-		"transform": Transform3D(
-			Basis(),
-			Vector3(origin.x + config.chunk_size_m * 0.5, 0.0, origin.z + config.chunk_size_m * 0.5)
-		),
+		"shape": "trimesh",
+		"faces": faces,
+		"transform": Transform3D.IDENTITY,
 	}
 
 

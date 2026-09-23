@@ -3,92 +3,146 @@ extends Node3D
 
 ## One streamed chunk of the world: the generated geometry plus its collision.
 ##
-## A chunk never generates data itself (WorldGenerator does that, so the world
-## is described in exactly one place); the node only owns the resources and can
-## be *retiered* - the same chunk may come back at a lower LOD when the player
-## drives away, without being freed and regenerated.
+## A chunk never generates data itself (WorldGenerator does that, so the world is
+## described in exactly one place); the node only owns the resources and can be
+## *retiered* - the same chunk may come back at a lower LOD when the player drives
+## away, without being freed and regenerated.
+##
+## Geometry arrives as four layers (terrain, roads, structures, foliage), each in
+## its own MeshInstance3D: the layers have different render flags (foliage uses
+## alpha scissor and casts no shadow, structures cast shadows) and different LOD
+## lifetimes, which one merged mesh could not express.
+
+## Layer order of WorldGenerator.generate_chunk()["meshes"].
+enum Layer { TERRAIN, ROADS, STRUCTURES, FOLIAGE }
 
 const TIER_NEAR := 0
 const TIER_MID := 1
 const TIER_FAR := 2
 
+const LAYER_NAMES := ["Terrain", "Roads", "Structures", "Foliage"]
+
 var cell: Vector2i = Vector2i.ZERO
 var tier: int = TIER_NEAR
 var triangle_count: int = 0
+var building_count: int = 0
 var generated_ms: float = 0.0
-var visible_layer_count: int = 0
+var surface_count: int = 0
 
-var _mesh_instance: MeshInstance3D = null
-var _foliage_instance: MeshInstance3D = null
+var _layers: Array[MeshInstance3D] = []
 var _static_body: StaticBody3D = null
 var _collider_shapes: Array = []
 
 
-func setup(chunk_cell: Vector2i, chunk_tier: int, mesh: ArrayMesh, foliage: ArrayMesh, collision: Dictionary) -> void:
+## Applies freshly generated content (a chunk may be rebuilt on a tier change).
+func apply_content(
+	chunk_cell: Vector2i,
+	chunk_tier: int,
+	meshes: Array,
+	colliders: Array,
+	buildings: int,
+	generation_ms: float
+) -> void:
 	cell = chunk_cell
 	tier = chunk_tier
 	name = "Chunk_%d_%d_T%d" % [cell.x, cell.y, tier]
+	building_count = buildings
+	generated_ms = generation_ms
 	_ensure_nodes()
-	_mesh_instance.mesh = mesh
-	visible_layer_count = 0
-	if mesh != null:
-		visible_layer_count = mesh.get_surface_count()
-	triangle_count = _count_triangles(mesh)
-	if foliage != null:
-		_foliage_instance.mesh = foliage
-		_foliage_instance.visible = true
-		triangle_count += _count_triangles(foliage)
-	else:
-		_foliage_instance.mesh = null
-		_foliage_instance.visible = false
-	_apply_collision(collision)
+	triangle_count = 0
+	surface_count = 0
+	for index in range(_layers.size()):
+		var instance := _layers[index]
+		var mesh: Mesh = meshes[index] if index < meshes.size() else null
+		instance.mesh = mesh
+		if mesh == null:
+			instance.visible = false
+			continue
+		instance.visible = true
+		surface_count += mesh.get_surface_count()
+		triangle_count += _count_triangles(mesh)
+	_apply_collision(colliders)
 	_apply_tier_flags()
 
 
 func _ensure_nodes() -> void:
-	if _mesh_instance == null:
-		_mesh_instance = MeshInstance3D.new()
-		_mesh_instance.name = "Geometry"
-		add_child(_mesh_instance)
-	if _foliage_instance == null:
-		_foliage_instance = MeshInstance3D.new()
-		_foliage_instance.name = "Foliage"
-		# Foliage uses alpha scissor: no shadows (mobile fill rate) and it is
-		# allowed to disappear at distance before the opaque geometry does.
-		_foliage_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		add_child(_foliage_instance)
-	if _static_body == null:
-		_static_body = StaticBody3D.new()
-		_static_body.name = "Collision"
-		_static_body.collision_layer = 1  # layer 1 = world
-		_static_body.collision_mask = 0
-		add_child(_static_body)
+	if not _layers.is_empty():
+		return
+	for index in range(LAYER_NAMES.size()):
+		var instance := MeshInstance3D.new()
+		instance.name = LAYER_NAMES[index]
+		if index == Layer.FOLIAGE:
+			# Foliage is alpha-scissored: no shadows (mobile fill rate) and it is
+			# allowed to disappear at distance before the opaque geometry does.
+			instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(instance)
+		_layers.append(instance)
+	_static_body = StaticBody3D.new()
+	_static_body.name = "Collision"
+	_static_body.collision_layer = 1  # layer 1 = world
+	_static_body.collision_mask = 0
+	add_child(_static_body)
 
 
-func _apply_collision(collision: Dictionary) -> void:
+## Collision arrives as plain descriptions ({"shape": "box", ...}) so the world
+## generator stays free of engine node types; the chunk turns them into shapes.
+func _apply_collision(colliders: Array) -> void:
 	for shape in _collider_shapes:
 		if is_instance_valid(shape):
 			shape.queue_free()
 	_collider_shapes.clear()
-	if collision == null or collision.is_empty():
+	if colliders == null:
 		return
-	var shapes: Array = collision.get("shapes", [])
-	for entry in shapes:
-		var shape_node := CollisionShape3D.new()
-		shape_node.shape = entry["shape"]
-		shape_node.transform = entry["transform"]
-		_static_body.add_child(shape_node)
-		_collider_shapes.append(shape_node)
+	for entry in colliders:
+		var shape := _make_shape(entry)
+		if shape == null:
+			continue
+		var node := CollisionShape3D.new()
+		node.shape = shape
+		node.transform = entry.get("transform", Transform3D.IDENTITY)
+		_static_body.add_child(node)
+		_collider_shapes.append(node)
+
+
+func _make_shape(entry: Dictionary) -> Shape3D:
+	var kind: String = String(entry.get("shape", ""))
+	match kind:
+		"box":
+			var box := BoxShape3D.new()
+			box.size = entry.get("size", Vector3.ONE)
+			return box
+		"cylinder":
+			var cylinder := CylinderShape3D.new()
+			cylinder.radius = float(entry.get("radius", 0.5))
+			cylinder.height = float(entry.get("height", 1.0))
+			return cylinder
+		"trimesh":
+			var trimesh := ConcavePolygonShape3D.new()
+			trimesh.set_faces(entry.get("faces", PackedVector3Array()))
+			return trimesh
+		"heightmap":
+			var heightmap := HeightMapShape3D.new()
+			heightmap.map_width = int(entry.get("width", 0))
+			heightmap.map_depth = int(entry.get("depth", 0))
+			heightmap.map_data = entry.get("heights", PackedFloat32Array())
+			return heightmap
+		_:
+			return null
 
 
 func _apply_tier_flags() -> void:
-	# Far chunks keep the silhouette but drop the small stuff.
-	if _foliage_instance != null and tier == TIER_FAR:
-		_foliage_instance.visible = false
-	var cast_shadows := tier != TIER_FAR
-	if _mesh_instance != null:
-		_mesh_instance.cast_shadow = (
-			GeometryInstance3D.SHADOW_CASTING_SETTING_ON if cast_shadows
+	# Far chunks keep the silhouette but drop the small stuff: foliage gone and
+	# no shadow casting at all (the LOD3 budget of the design brief).
+	if _layers.is_empty():
+		return
+	if tier == TIER_FAR:
+		_layers[Layer.FOLIAGE].visible = false
+	for index in range(_layers.size()):
+		var instance := _layers[index]
+		if instance.mesh == null or index == Layer.FOLIAGE:
+			continue
+		instance.cast_shadow = (
+			GeometryInstance3D.SHADOW_CASTING_SETTING_ON if tier != TIER_FAR
 			else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		)
 
@@ -100,16 +154,16 @@ func _count_triangles(mesh: Mesh) -> int:
 	var array_mesh := mesh as ArrayMesh
 	for surface in range(array_mesh.get_surface_count()):
 		var arrays: Array = array_mesh.surface_get_arrays(surface)
-		var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
-		total += indices.size() / 3
+		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		total += vertices.size() / 3  # the builder emits non-indexed triangles
 	return total
 
 
 ## Global (world space) AABB of the chunk content - used for culling debug.
 func world_aabb() -> AABB:
-	if _mesh_instance == null or _mesh_instance.mesh == null:
+	if _layers.is_empty() or _layers[Layer.TERRAIN].mesh == null:
 		return AABB(global_position, Vector3.ZERO)
-	return _mesh_instance.get_aabb()
+	return _layers[Layer.TERRAIN].get_aabb()
 
 
 func has_collision() -> bool:
@@ -125,7 +179,8 @@ func debug_info() -> Dictionary:
 		"cell": cell,
 		"tier": tier,
 		"triangles": triangle_count,
-		"surfaces": visible_layer_count,
+		"surfaces": surface_count,
+		"buildings": building_count,
 		"colliders": _collider_shapes.size(),
 		"generated_ms": snappedf(generated_ms, 0.01),
 	}

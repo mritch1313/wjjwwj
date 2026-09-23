@@ -51,6 +51,31 @@ def used_names() -> dict[str, list[str]]:
     return used
 
 
+## Методы MeshBuilder, первый аргумент которых - имя материала из библиотеки.
+BUILDER_METHODS = (
+    "add_quad|add_triangle|add_box|add_cylinder|add_prism|add_gable_roof|add_hip_roof"
+    "|add_roof_hip|add_tube|add_foliage_planes|add_billboard|add_rock|add_disc"
+)
+
+
+def builder_material_names() -> dict[str, list[str]]:
+    """Имена материалов, переданные сборщикам мешей в первом аргументе.
+
+    Ошибка в таком имени не ломает сборку проекта (AssetLibrary подставит
+    бетон и напечатает предупреждение), но меняет внешний вид мира молча -
+    поэтому имена проверяются здесь, а не на телефоне.
+    """
+    used: dict[str, list[str]] = {}
+    pattern = re.compile(rf"\.(?:{BUILDER_METHODS})\(\s*\n?\s*\"([a-z0-9_]+)\"")
+    skip_dirs = {".godot", ".git", "tests", "tools"}
+    for path in (ROOT / "scripts").rglob("*.gd"):
+        if path.name == "asset_library.gd" or any(part in skip_dirs for part in path.parts):
+            continue
+        for match in pattern.finditer(read(path)):
+            used.setdefault(match.group(1), []).append(str(path.relative_to(ROOT)))
+    return used
+
+
 def generator_outputs() -> set[str]:
     if not GENERATOR.exists():
         return set()
@@ -74,7 +99,15 @@ def main() -> int:
         if name not in keys:
             problems.append(f"Assets.*(\"{name}\") не объявлен в asset_library.gd (используется в {', '.join(sorted(set(callers)))})")
 
-    print(f"материалов/мешей в библиотеке: {len(keys)}")
+    builder_names = builder_material_names()
+    for name, callers in sorted(builder_names.items()):
+        if name not in keys:
+            problems.append(
+                f"материал \"{name}\" не объявлен в asset_library.gd "
+                f"(сборщик мешей в {', '.join(sorted(set(callers)))})"
+            )
+
+    print(f"материалов/мешей в библиотеке: {len(keys)}, через сборщики мешей: {len(builder_names)}")
     print(f"текстур объявлено: {len(textures)}, найдено в assets/textures: {len(on_disk)}")
     for problem in problems:
         print(f"ОШИБКА: {problem}")

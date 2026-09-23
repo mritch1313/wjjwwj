@@ -48,7 +48,7 @@ func _default_police_vehicle() -> VehicleConfig:
 	cfg.display_name = "Police Interceptor"
 	cfg.mass_kg = 1640.0
 	cfg.max_torque_nm = 395.0
-	cfg.center_of_mass_offset = Vector3(0.0, -0.5, 0.04)
+	cfg.center_of_mass_offset = Vector3(0.0, 0.58, 0.04)  # выше дороги: начало координат = плоскость контакта
 	cfg.body_size = Vector3(1.92, 1.06, 4.72)
 	cfg.top_speed_kmh = 158.0 * PursuitBalance.POLICE_SPEED_FACTOR
 	cfg.suspension_spring_n_per_m = 48000.0

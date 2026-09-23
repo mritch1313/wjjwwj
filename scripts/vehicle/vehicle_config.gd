@@ -12,8 +12,12 @@ enum Drivetrain { RWD, FWD, AWD }
 @export_group("Body")
 @export var display_name: String = "Sedan"
 @export var mass_kg: float = 1430.0
-## Centre of mass relative to the body origin (negative Y = lower).
-@export var center_of_mass_offset: Vector3 = Vector3(0.0, -0.45, 0.05)
+## Centre of mass of the car relative to the body origin.  The origin is the
+## contact plane (see ground_clearance_m), so a realistic value is a positive Y
+## of roughly half the body height: a sedan's centre of mass sits ~0.55 m above
+## the road.  A negative Y would bury it under the road and make the solver
+## shove the car upwards.
+@export var center_of_mass_offset: Vector3 = Vector3(0.0, 0.55, 0.05)
 @export var body_size: Vector3 = Vector3(1.86, 1.02, 4.48)
 @export var linear_damping: float = 0.02
 @export var angular_damping: float = 0.35
@@ -54,6 +58,11 @@ enum Drivetrain { RWD, FWD, AWD }
 @export var differential_lock: float = 0.35
 
 @export_group("Wheels and suspension")
+## Высота нижней точки кузова над плоскостью контакта колёс (в системе координат
+## машины начало координат - это плоскость контакта при подвеске в положении
+## покоя).  Одно и то же число используют коллизия кузова и визуальная модель,
+## иначе машина либо падает на "брюхо", либо висит в воздухе на колёсах.
+@export var ground_clearance_m: float = 0.18
 @export var wheel_radius_m: float = 0.335
 @export var wheel_width_m: float = 0.235
 @export var wheelbase_m: float = 2.72
@@ -137,10 +146,16 @@ func reverse_top_speed_ms() -> float:
 
 
 func wheel_positions() -> Array:
-	## x = left/right, y = suspension anchor height, z = front/back (+Z is rear)
+	## x = left/right, y = suspension anchor height, z = front/back (+Z is rear).
+	##
+	## The origin of the car is the ground contact plane, so at a suspension at
+	## rest length the wheel centre sits exactly `wheel_radius` above the ground:
+	## the anchor is that height plus the rest length of the spring.  The wheel
+	## then travels `suspension_max_travel_m` up and down around this point, which
+	## is what the visual model shows and what the raycast suspension measures.
 	var half_track := track_width_m * 0.5
 	var half_base := wheelbase_m * 0.5
-	var anchor_y := -body_size.y * 0.5 + suspension_rest_length_m + wheel_radius_m
+	var anchor_y := suspension_rest_length_m + wheel_radius_m
 	return [
 		Vector3(-half_track, anchor_y, -half_base),  # front left
 		Vector3(half_track, anchor_y, -half_base),   # front right

@@ -72,7 +72,10 @@ func _ready() -> void:
 
 func _update_layout() -> void:
 	var viewport_size := get_viewport().get_visible_rect().size
-	size = viewport_size
+	# Анкеры растянуты на весь экран, поэтому size здесь только дублирует их:
+	# ставим его отложенно, иначе Godot ругается на переопределение размера.
+	if not size.is_equal_approx(viewport_size):
+		set_deferred("size", viewport_size)
 	_scale = clampf(viewport_size.x / 720.0, 0.75, 2.0) * Settings.hud_scale
 	var bottom := viewport_size.y
 	var margin := 18.0 * _scale
