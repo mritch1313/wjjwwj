@@ -9,6 +9,9 @@ extends Control
 ## always points up, which is what players expect from a chase game.
 
 const REFRESH_INTERVAL_S := 0.5
+## Порог перерисовки: смещение игрока и поворот, при которых карта обновляется.
+const REDRAW_DISTANCE_M := 2.5
+const REDRAW_ANGLE_RAD := 0.09  # ~5 градусов
 
 var player: Node3D = null
 var police_manager: PoliceManager = null
@@ -27,6 +30,9 @@ var border_color: Color = Color(0.7, 0.78, 0.9, 0.5)
 var _cache: Array[PackedVector2Array] = []
 var _cache_types: PackedInt32Array = PackedInt32Array()
 var _refresh_timer: float = 0.0
+## Последнее состояние, при котором карта перерисовывалась (см. _process).
+var _last_draw_position: Vector3 = Vector3.INF
+var _last_draw_yaw: float = 0.0
 var _cache_center: Vector3 = Vector3(1e9, 0.0, 1e9)
 var _font: Font = null
 var _water_polygon: PackedVector2Array = PackedVector2Array()
@@ -45,12 +51,27 @@ func set_world(roads: RoadNetwork) -> void:
 	_refresh_timer = 0.0
 
 
+## Перерисовка карты стоит дорого: в кэше лежат сотни ломаных дорог, и раньше
+## они перерисовывались КАЖДЫЙ кадр со сглаживанием - на телефоне это заметная
+## доля кадра.  Теперь карта перерисовывается только когда сместился игрок или
+## перестроился кэш.
 func _process(delta: float) -> void:
 	_refresh_timer -= delta
+	var cache_rebuilt := false
 	if _refresh_timer <= 0.0:
 		_refresh_timer = REFRESH_INTERVAL_S
 		_rebuild_cache()
-	queue_redraw()
+		cache_rebuilt = true
+	if player == null or not is_instance_valid(player):
+		if cache_rebuilt:
+			queue_redraw()
+		return
+	var moved := player.global_position.distance_to(_last_draw_position) > REDRAW_DISTANCE_M
+	var turned := absf(angle_difference(_last_draw_yaw, player.rotation.y)) > REDRAW_ANGLE_RAD
+	if cache_rebuilt or moved or turned:
+		_last_draw_position = player.global_position
+		_last_draw_yaw = player.rotation.y
+		queue_redraw()
 
 
 func _rebuild_cache() -> void:
@@ -110,7 +131,9 @@ func _draw() -> void:
 		var road_type := _cache_types[i]
 		var color := highway_color if road_type == RoadNetwork.RoadType.HIGHWAY or road_type == RoadNetwork.RoadType.RAMP else road_color
 		var width := 4.0 if color == highway_color else 2.4
-		draw_polyline(mapped, color, width, true)
+		# antialiased = false: сглаживание ломаных - заметная работа на CPU,
+		# а на карте 200x200 точек разница незаметна
+		draw_polyline(mapped, color, width, false)
 	# police cars
 	if police_manager != null and is_instance_valid(police_manager):
 		for car in police_manager.cars:

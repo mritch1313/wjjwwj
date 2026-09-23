@@ -223,16 +223,28 @@ func bind(player_car: VehicleController, police: PoliceManager, roads: RoadNetwo
 func _process(delta: float) -> void:
 	if player == null or not is_instance_valid(player):
 		return
-	_speed_label.text = "%d" % roundi(player.speed_kmh())
-	var gear_text := "R" if player.is_reversing() else ("N" if absf(player.forward_speed_ms()) < 0.3 else str(player.gear))
-	_gear_label.text = "%s · %s" % [L10n.t("speed"), gear_text]
+	# Текст обновляем только когда он действительно изменился: присваивание
+	# Label.text пересчитывает разметку даже при одинаковой строке, а на телефоне
+	# это лишняя работа каждый кадр.
+	var speed_text := "%d" % roundi(player.speed_kmh())
+	if speed_text != _speed_label.text:
+		_speed_label.text = speed_text
+	var reversing := player.is_reversing()
+	var gear_text := "R" if reversing else ("N" if absf(player.forward_speed_ms()) < 0.3 else str(player.gear))
+	var gear_line := "%s · %s" % [L10n.t("speed"), gear_text]
+	if gear_line != _gear_label.text:
+		_gear_label.text = gear_line
 	var nitro_value: Variant = player.nitro
 	if nitro_value is NitroSystem:
 		var nitro := nitro_value as NitroSystem
 		var ratio := nitro.charge_ratio()
-		_nitro_bar.size.x = maxf(170.0 * _font_scale * ratio, 1.0)
+		var bar_width := maxf(170.0 * _font_scale * ratio, 1.0)
+		if absf(_nitro_bar.size.x - bar_width) > 0.5:
+			_nitro_bar.size.x = bar_width
 		_nitro_bar.color = Color(1.0, 0.55, 0.2, 0.95) if nitro.active else Color(0.25, 0.7, 1.0, 0.9)
-		_nitro_label.text = "%s %d%%" % [L10n.t("nitro"), roundi(ratio * 100.0)]
+		var nitro_text := "%s %d%%" % [L10n.t("nitro"), roundi(ratio * 100.0)]
+		if nitro_text != _nitro_label.text:
+			_nitro_label.text = nitro_text
 	# --- toasts fade out
 	if _toast_timer_s > 0.0:
 		_toast_timer_s -= delta

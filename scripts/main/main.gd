@@ -178,8 +178,12 @@ func _warmup_world() -> void:
 	# в игре.  Раньше ожидание растягивалось на минуты, потому что загрузка
 	# ждала чанки в радиусе трети обзора.
 	var total_steps := 8
+	# Условие выхода: готов чанк под машиной (и соседи в половине длины чанка).
+	# Машина не должна появиться раньше земли под ней, но и ждать полный обзор на
+	# заставке смысла нет - остальное догружается в игре.
+	var spawn_radius := world.config.chunk_size_m * 0.5
 	for step in range(total_steps):
-		if world.is_ready_around(player_start_position, world.near_radius * 0.55) and step >= 2:
+		if world.is_ready_around(player_start_position, spawn_radius) and step >= 2:
 			break
 		world.warmup(player_start_position, WARMUP_CHUNKS_PER_STEP)
 		menu.report_loading(float(step + 1) / float(total_steps), world.loaded_chunk_count())
