@@ -11,6 +11,10 @@ signal settings_changed
 enum SteeringMode { BUTTONS, WHEEL }
 
 const CONFIG_PATH := "user://settings.cfg"
+## Версия файла настроек: при обновлении игры старые настройки с тяжёлым
+## пресетом качества переносятся на безопасный LOW - иначе телефон остаётся
+## с тенями 2048 из прежней версии и играет по 1-2 кадра в секунду.
+const SETTINGS_VERSION := 2
 
 ## По умолчанию на телефоне включается LOW: телефон неизвестен, а пресет
 ## "Medium" с тенями 2048 и дальностью 448 м валит слабые устройства до
@@ -41,8 +45,8 @@ var police_count: int = 3
 var ai_level: int = 2
 var player_paint_index: int = 0
 
-## Ориентация экрана: 0 - как задано в проекте (портрет), 1 - всегда портрет,
-## 2 - всегда ландшафт.
+## Ориентация экрана: 0 - всегда вертикально (значение по умолчанию, как требует
+## ТЗ игры), 1 - всегда горизонтально, 2 - автоматически (сенсор устройства).
 var orientation_mode: int = 0
 var _quality: GraphicsQuality = null
 
@@ -52,6 +56,9 @@ func _ready() -> void:
 	_quality = Config.quality_preset(quality_index)
 	if keep_screen_on and OS.has_feature("mobile"):
 		DisplayServer.screen_set_keep_on(true)
+	# Ориентация применяется до первого кадра: раньше экран переворачивался
+	# только после нажатия кнопки в настройках, и игра открывалась боком.
+	apply_orientation()
 	apply_audio_bus_volumes()
 
 
@@ -124,19 +131,21 @@ func apply_render_scale(scale: float) -> void:
 
 
 ## ------------------------------------------------------------------ экран --
-## Ориентация выбирается игроком: 0 - как в проекте (портрет), 1 - портрет,
-## 2 - ландшафт.  На Android применяется сразу, на других платформах значение
-## сохраняется (там окно задаёт пользователь).
-func apply_orientation() -> void:
-	var target := DisplayServer.SCREEN_PORTRAIT
+## Ориентация выбирается игроком: 0 - вертикально (по умолчанию), 1 - горизон-
+## тально, 2 - автоматически.  На Android применяется сразу, на других
+## платформах значение сохраняется (там окно задаёт пользователь).
+func orientation_constant() -> int:
 	match orientation_mode:
-		2:
-			target = DisplayServer.SCREEN_LANDSCAPE
 		1:
-			target = DisplayServer.SCREEN_PORTRAIT
+			return DisplayServer.SCREEN_LANDSCAPE
+		2:
+			return DisplayServer.SCREEN_SENSOR
 		_:
-			target = DisplayServer.SCREEN_SENSOR
-	DisplayServer.screen_set_orientation(target)
+			return DisplayServer.SCREEN_PORTRAIT
+
+
+func apply_orientation() -> void:
+	DisplayServer.screen_set_orientation(orientation_constant())
 
 
 func apply_audio_bus_volumes() -> void:
@@ -169,7 +178,16 @@ func notify_changed(save_now: bool = true) -> void:
 func _load() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(CONFIG_PATH) != OK:
+		_save()
 		return
+	var version := int(cfg.get_value("meta", "version", 0))
+	if version < SETTINGS_VERSION:
+		# Файл от старой версии: переносим качество на самый лёгкий пресет,
+		# чтобы слабый телефон не тащил настройки, при которых он не играется.
+		quality_index = 0
+		cfg.set_value("display", "quality", quality_index)
+		cfg.set_value("meta", "version", SETTINGS_VERSION)
+		cfg.save(CONFIG_PATH)
 	quality_index = int(cfg.get_value("display", "quality", quality_index))
 	orientation_mode = int(cfg.get_value("display", "orientation", 0))
 	language = String(cfg.get_value("display", "language", "ru"))
@@ -195,6 +213,7 @@ func _load() -> void:
 
 func _save() -> void:
 	var cfg := ConfigFile.new()
+	cfg.set_value("meta", "version", SETTINGS_VERSION)
 	cfg.set_value("display", "quality", quality_index)
 	cfg.set_value("display", "orientation", orientation_mode)
 	cfg.set_value("display", "language", language)

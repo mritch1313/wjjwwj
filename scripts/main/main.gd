@@ -19,7 +19,7 @@ extends Node3D
 ## Сколько чанков строим за один шаг заставки.  После ускорения MeshBuilder
 ## чанк строится в разы быстрее, поэтому за шаг можно брать больше, и мир
 ## появляется быстрее.
-const WARMUP_CHUNKS_PER_STEP := 4
+const WARMUP_CHUNKS_PER_STEP := 2
 ## Сколько секунд машина может лежать на крыше, прежде чем игра сама вернёт её
 ## на дорогу: перевёрнутая машина иначе остаётся перевёрнутой навсегда, потому
 ## что игрок в этом положении обычно ничего не может сделать.
@@ -135,6 +135,7 @@ func _build_interface() -> void:
 	menu.quit_to_free_roam_requested.connect(_on_quit_to_free_roam)
 	menu.quality_changed.connect(_on_quality_changed)
 	menu.paint_changed.connect(_on_paint_changed)
+	menu.lift_car_requested.connect(_on_lift_car_requested)
 	add_child(menu)
 
 	touch_controls.pause_requested.connect(_on_pause_requested)
@@ -177,7 +178,7 @@ func _warmup_world() -> void:
 	# Заставка ждёт только маленькое кольцо вокруг машины: остальное догружается
 	# в игре.  Раньше ожидание растягивалось на минуты, потому что загрузка
 	# ждала чанки в радиусе трети обзора.
-	var total_steps := 8
+	var total_steps := 6
 	# Условие выхода: готов чанк под машиной (и соседи в половине длины чанка).
 	# Машина не должна появиться раньше земли под ней, но и ждать полный обзор на
 	# заставке смысла нет - остальное догружается в игре.
@@ -346,6 +347,14 @@ func _apply_camera_distance() -> void:
 	chase_camera.min_distance = 5.4 * factor
 	chase_camera.max_distance = 11.0 * factor
 	chase_camera.distance = clampf(chase_camera.distance, chase_camera.min_distance, chase_camera.max_distance)
+
+
+## Кнопка «Y» в настройках: каждое нажатие поднимает машину игрока на метр (см.
+## VehicleController.lift_up).  Работает и в свободной езде, и в погоне.
+func _on_lift_car_requested(meters: float) -> void:
+	if player == null:
+		return
+	player.lift_up(meters)
 
 
 func _on_paint_changed(_index: int) -> void:

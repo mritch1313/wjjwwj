@@ -51,6 +51,8 @@ var _pending: Array[Dictionary] = []
 var _job: WorldGenerator.ChunkJob = null
 var _job_cell: Vector2i = Vector2i(-9999, -9999)
 var _job_tier: int = WorldGenerator.TIER_FAR
+## Расстояние до активного чанка: по нему понятно, ждать его на заставке или нет.
+var _job_distance: float = 0.0
 var _generation_budget_ms: float = 6.0
 var _last_center: Vector3 = Vector3(1e9, 0.0, 1e9)
 var _last_update: float = 0.0
@@ -276,17 +278,30 @@ func _start_next_job() -> void:
 	_job = generator.begin_chunk(cell, int(entry["tier"]))
 	_job_cell = cell
 	_job_tier = int(entry["tier"])
+	_job_distance = float(entry.get("distance", 0.0))
 
 
 ## Сообщает миру, что вокруг игрока всё построено (заставка и тесты ждут этот
 ## сигнал).
 func _announce_stream_state() -> void:
-	if _pending.is_empty() and _job == null:
+	if _near_zone_ready():
 		if not _stream_complete_sent and _warmup_done:
 			_stream_complete_sent = true
 			stream_complete.emit()
 		return
 	_stream_complete_sent = false
+
+
+## Ближняя зона (всё, что ближе mid_radius) построена.  Дальние чанки могут
+## догружаться в фоне: ждать их на заставке - это минута загрузки на слабом
+## телефоне, где догрузка идёт порциями по бюджету кадра.
+func _near_zone_ready() -> bool:
+	if _job != null and _job_distance <= mid_radius:
+		return false
+	for entry in _pending:
+		if float(entry["distance"]) <= mid_radius:
+			return false
+	return true
 
 
 ## Создаёт меши из данных чанка (главный поток) и наполняет узел чанка.
@@ -311,7 +326,11 @@ func _apply_chunk_data(cell: Vector2i, tier: int, data: Dictionary) -> void:
 	)
 	# Distance culling: слой построек виден чуть дальше радиуса стриминга (чтобы
 	# не мигал на границе), растительность убирается заметно раньше.
-	chunk.set_cull_distances(view_radius + config.chunk_size_m, view_radius * 0.75)
+	# Мелкий декор живёт только рядом с игроком: десять его материалов на чанк -
+	# это десять вызовов отрисовки, которые на двухсот метрах ничего не дают.
+	chunk.set_cull_distances(
+		view_radius + config.chunk_size_m, minf(view_radius * 0.45, 120.0), view_radius * 0.75
+	)
 	chunk_ready.emit(cell, tier)
 
 
@@ -336,7 +355,7 @@ func warmup(center: Vector3, max_chunks: int = 12) -> int:
 		_build_chunk(entry["cell"], int(entry["tier"]))
 		generated += 1
 	_warmup_done = true
-	if _pending.is_empty():
+	if _near_zone_ready():
 		_stream_complete_sent = true
 		world_ready.emit()
 	return generated

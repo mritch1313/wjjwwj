@@ -147,7 +147,7 @@ func test_chunk_generation_is_resource_free_and_mesh_data_round_trips() -> void:
 	var generator: WorldGenerator = WorldFixture.generator()
 	var chunk_data := generator.generate_chunk_data(Vector2i(3, 3), WorldGenerator.TIER_FAR)
 	assert_true(not chunk_data.has("meshes"), "данные чанка не содержат готовых мешей")
-	assert_eq((chunk_data["mesh_data"] as Array).size(), 4, "четыре слоя геометрии")
+	assert_eq((chunk_data["mesh_data"] as Array).size(), 5, "пять слоёв геометрии")
 	assert_gt(float((chunk_data["colliders"] as Array).size()), 0.0, "коллайдеры описаны данными")
 	assert_gt(float(chunk_data["generation_ms"]), 0.0, "время генерации измеряется")
 	# меши собираются из этих данных без ошибок и непустые
@@ -178,7 +178,7 @@ func test_chunk_generation_is_split_into_small_steps() -> void:
 			break
 	assert_gt(float(steps), 8.0, "чанк собирается многими порциями (шагов %d)" % steps)
 	var data := generator.result_from_job(job)
-	assert_eq((data["mesh_data"] as Array).size(), 4, "порционный путь даёт те же четыре слоя")
+	assert_eq((data["mesh_data"] as Array).size(), 5, "порционный путь даёт те же пять слоёв")
 	assert_gt(float((data["colliders"] as Array).size()), 0.0, "коллайдеры собраны")
 	# Полная сборка того же чанка для сравнения: самый длинный шаг обязан быть
 	# заметно короче её (иначе дробление ничего не даёт).

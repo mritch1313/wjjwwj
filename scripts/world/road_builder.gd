@@ -168,9 +168,12 @@ func _add_ribbon(
 		if tangent.length() < 0.001:
 			tangent = Vector3.FORWARD
 		var lateral := Vector3(-tangent.z, 0.0, tangent.x).normalized()
+		# Высота точки дороги уже равна рельефу под ней: height_at() выравнивает
+		# землю под полотно (в пределах half_width вес сглаживания равен единице),
+		# поэтому повторный запрос рельефа на каждую точку полотна ничего не менял,
+		# а стоил дороже всей остальной геометрии дороги (запрос - ~40 мкс на
+		# точку, точек на чанк тысячи).
 		var y := point.y + deck_lift
-		if not is_elevated:
-			y = terrain.height_at(point.x, point.z) + deck_lift
 		matrix.append({
 			"left": Vector3(point.x + lateral.x * half_width, y, point.z + lateral.z * half_width),
 			"right": Vector3(point.x - lateral.x * half_width, y, point.z - lateral.z * half_width),

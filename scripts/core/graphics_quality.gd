@@ -54,8 +54,8 @@ static func low() -> GraphicsQuality:
 	var q := GraphicsQuality.new()
 	q.title = "Low"
 	q.description = "Best performance: shorter view distance, no realtime shadows."
-	q.view_distance_m = 320.0
-	q.max_chunks_loaded = 25
+	q.view_distance_m = 288.0
+	q.max_chunks_loaded = 16
 	q.generation_budget_ms = 5.0
 	q.max_generations_per_frame = 1
 	q.lod_bias = 0.75
@@ -65,7 +65,7 @@ static func low() -> GraphicsQuality:
 	q.distant_silhouettes = true
 	q.prop_density = 0.42
 	q.foliage_density = 0.45
-	q.terrain_quad_scale = 1.6
+	q.terrain_quad_scale = 1.9
 	q.shadows_enabled = false
 	q.shadow_distance_m = 60.0
 	q.shadow_map_size = 512
@@ -75,7 +75,7 @@ static func low() -> GraphicsQuality:
 	q.fog_quality = 0.6
 	# 0.62: телефон рисует меньше пикселей, картинка растягивается обратно.
 	# Без этого на слабом GPU кадр не укладывается ни в какие бюджеты.
-	q.render_scale = 0.62
+	q.render_scale = 0.56
 	q.msaa_3d = 0
 	q.mipmap_bias = 0.0
 	q.particles_enabled = false

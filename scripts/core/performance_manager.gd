@@ -32,6 +32,10 @@ var ai_update_stride: int = 1
 var chase_ai_interval: float = 0.05
 var strategic_ai_interval: float = 1.0
 var streamer_interval: float = 0.25
+## Пауза после понижения качества: без неё автоадаптация «понизил - через
+## секунду повысил» заставляла стример пересобирать чанки по кругу, и вместо
+## кадров телефон получал бесконечную генерацию.
+var upgrade_lock_s: float = 0.0
 var lod_interval: float = 0.35
 
 var average_frame_ms: float = 0.0
@@ -87,12 +91,15 @@ func _process(delta: float) -> void:
 	else:
 		_fast_seconds += delta
 		_slow_seconds = 0.0
+	upgrade_lock_s = maxf(upgrade_lock_s - delta, 0.0)
 	if _slow_seconds > 2.5:
 		_slow_seconds = 0.0
 		_degrade()
+		upgrade_lock_s = 25.0
 	elif _fast_seconds > 12.0:
 		_fast_seconds = 0.0
-		_upgrade()
+		if upgrade_lock_s <= 0.0:
+			_upgrade()
 
 
 func _degrade() -> void:

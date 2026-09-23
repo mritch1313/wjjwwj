@@ -162,6 +162,29 @@ func _run() -> void:
 	var surface: int = player.current_surface
 	_check(surface >= 0, "поверхность под машиной определена (тип %d)" % surface)
 
+	# --- 1b. Кнопка «Y» в настройках: каждое нажатие поднимает машину на метр.
+	var lift_start: float = player.global_position.y
+	var lift_origin: Transform3D = player.global_transform
+	var menu: MainMenu = main.menu
+	if menu != null:
+		menu.lift_car_requested.emit(1.0)
+		menu.lift_car_requested.emit(1.0)
+		menu.lift_car_requested.emit(1.0)
+		var lifted: float = player.global_position.y - lift_start
+		_check(lifted > 2.5 and lifted < 3.5, "кнопка «Y» подняла машину на %.2f м за три нажатия" % lifted)
+	else:
+		_check(false, "меню настроек доступно из сцены (для кнопки «Y»)")
+	# Возвращаем машину ровно туда, где она стояла до подъёма (там заведомо
+	# свободно), и гасим скорости: проверка разгона ниже должна начинаться
+	# с земли, а не с трёх метров над дорогой.
+	player.global_transform = lift_origin
+	player.linear_velocity = Vector3.ZERO
+	player.angular_velocity = Vector3.ZERO
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	_check(player.global_position.distance_to(lift_origin.origin) < 0.5,
+		"после кнопки «Y» машина возвращена на исходное место")
+
 	# --- 2. Едем вперёд: скорость должна вырасти (проверяем физику, а не позицию).
 	var input: VehicleInput = player.vehicle_input()
 	var start_position: Vector3 = player.global_position

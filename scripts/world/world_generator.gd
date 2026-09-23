@@ -143,6 +143,7 @@ func begin_chunk(cell: Vector2i, tier: int) -> ChunkJob:
 	job.terrain_builder = MeshBuilder.new()
 	job.road_builder = MeshBuilder.new()
 	job.structures = MeshBuilder.new()
+	job.props = MeshBuilder.new()
 	job.foliage = MeshBuilder.new()
 	var params := _terrain_params(tier, job.rect)
 	job.terrain_step = float(params["step"])
@@ -150,14 +151,19 @@ func begin_chunk(cell: Vector2i, tier: int) -> ChunkJob:
 	job.terrain_rows = int(params["rows"])
 	job.base_x = float(params["base_x"])
 	job.base_z = float(params["base_z"])
-	job.heights.resize(job.terrain_rows * job.terrain_rows)
-	job.materials.resize(job.terrain_rows * job.terrain_rows)
-	job.tints.resize(job.terrain_rows * job.terrain_rows)
+	var sample_count := job.terrain_rows * job.terrain_rows
+	job.heights.resize(sample_count)
+	job.materials.resize(sample_count)
+	job.tints.resize(sample_count)
 	job.road_detailed = tier <= TIER_NEAR
 	job.road_segments = road_builder.collect_segments(job.rect)
 	if job.road_detailed:
 		job.junctions = road_builder.collect_junctions(job.rect)
 	job.city_enabled = tier <= TIER_MID
+	# Мелкий уличный декор - только в ближнем чанке: это десяток материалов
+	# (скамейки, урны, столбы, вывески), то есть десяток вызовов отрисовки, а на
+	# двухсот метрах их всё равно не видно.
+	job.furniture_enabled = tier <= TIER_NEAR
 	job.scenery_enabled = tier <= TIER_MID and terrain.urban_at(job.rect.get_center().x, job.rect.get_center().y) < 0.65
 	job.block_rows = city_builder.block_row_range(job.rect)
 	job.block_columns = city_builder.block_column_range(job.rect)
@@ -215,8 +221,8 @@ func step_chunk(job: ChunkJob) -> bool:
 			if job.cursor > job.block_rows.y:
 				job.stage = STAGE_FURNITURE
 		STAGE_FURNITURE:
-			if job.city_enabled:
-				city_builder.build_street_furniture(job.structures, job.rect, job.tier, job.rng, job.colliders)
+			if job.furniture_enabled:
+				city_builder.build_street_furniture(job.props, job.rect, job.tier, job.rng, job.colliders)
 			job.stage = STAGE_LANDMARKS
 		STAGE_LANDMARKS:
 			if job.city_enabled:
@@ -231,6 +237,7 @@ func step_chunk(job: ChunkJob) -> bool:
 				job.terrain_builder.commit_data(),
 				job.road_builder.commit_data(),
 				job.structures.commit_data(),
+				job.props.commit_data(),
 				job.foliage.commit_data(),
 			]
 			job.stage = STAGE_DONE
@@ -311,11 +318,11 @@ func _build_terrain_quads(job: ChunkJob, from_row: int, to_row: int) -> void:
 			var uv1 := Vector2(p1.x, p1.z) * uv_scale
 			var uv2 := Vector2(p2.x, p2.z) * uv_scale
 			var uv3 := Vector2(p3.x, p3.z) * uv_scale
-			var material := job.materials[i0]
+			var material: String = job.materials[i0]
 			# rock faces where the slope is high, otherwise follow the surface:
 			# центральная разность по готовой сетке высот вместо ещё одного запроса
-			var gradient_x := (heights[i1] - heights[i0]) / step
-			var gradient_z := (heights[i3] - heights[i0]) / step
+			var gradient_x: float = (heights[i1] - heights[i0]) / step
+			var gradient_z: float = (heights[i3] - heights[i0]) / step
 			var slope := clampf(sqrt(gradient_x * gradient_x + gradient_z * gradient_z), 0.0, 1.0)
 			if slope > 0.7:
 				material = "ground_rock"
@@ -369,10 +376,10 @@ func _ground_collision_sampled(rect: Rect2, tier: int, origin: Vector3) -> Dicti
 			var x1 := x0 + cell
 			var z0 := origin.z + float(iz) * cell
 			var z1 := z0 + cell
-			var h00 := heights[iz * (count + 1) + ix]
-			var h10 := heights[iz * (count + 1) + ix + 1]
-			var h01 := heights[(iz + 1) * (count + 1) + ix]
-			var h11 := heights[(iz + 1) * (count + 1) + ix + 1]
+			var h00: float = heights[iz * (count + 1) + ix]
+			var h10: float = heights[iz * (count + 1) + ix + 1]
+			var h01: float = heights[(iz + 1) * (count + 1) + ix]
+			var h11: float = heights[(iz + 1) * (count + 1) + ix + 1]
 			# Same diagonal split as the mesh (shorter diagonal wins), so what the
 			# wheels feel is what the player sees.
 			var diagonal_p3 := Vector3(x0, h00, z0).distance_squared_to(Vector3(x1, h11, z1))
@@ -420,10 +427,10 @@ func _ground_collision_from_grid(
 			var x1 := x0 + step
 			var z0 := base_z + float(iz) * step
 			var z1 := z0 + step
-			var h00 := heights[iz * rows + ix]
-			var h10 := heights[iz * rows + ix + 1]
-			var h01 := heights[(iz + 1) * rows + ix]
-			var h11 := heights[(iz + 1) * rows + ix + 1]
+			var h00: float = heights[iz * rows + ix]
+			var h10: float = heights[iz * rows + ix + 1]
+			var h01: float = heights[(iz + 1) * rows + ix]
+			var h11: float = heights[(iz + 1) * rows + ix + 1]
 			# То же разбиение по короткой диагонали, что у меша
 			var diagonal_p3 := Vector3(x0, h00, z0).distance_squared_to(Vector3(x1, h11, z1))
 			var diagonal_p2 := Vector3(x1, h10, z0).distance_squared_to(Vector3(x0, h01, z1))
@@ -490,6 +497,7 @@ class ChunkJob:
 	var colliders: Array = []
 	var buildings: int = 0
 	var city_enabled: bool = false
+	var furniture_enabled: bool = false
 	var scenery_enabled: bool = false
 	# рельеф
 	var terrain_step: float = 1.0
@@ -497,6 +505,8 @@ class ChunkJob:
 	var terrain_rows: int = 0
 	var base_x: float = 0.0
 	var base_z: float = 0.0
+	# Типизированные Packed-массивы: чтение высоты из них не разворачивает
+	# Variant (замер показал, что обычный Array на этой части только медленнее).
 	var heights: PackedFloat32Array = PackedFloat32Array()
 	var materials: PackedStringArray = PackedStringArray()
 	var tints: PackedColorArray = PackedColorArray()
@@ -511,6 +521,7 @@ class ChunkJob:
 	var terrain_builder: MeshBuilder = null
 	var road_builder: MeshBuilder = null
 	var structures: MeshBuilder = null
+	var props: MeshBuilder = null
 	var foliage: MeshBuilder = null
 	var ground_collision: Dictionary = {}
 	var mesh_data: Array = []

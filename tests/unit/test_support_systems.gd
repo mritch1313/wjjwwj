@@ -187,6 +187,22 @@ func test_settings_persist_between_loads() -> void:
 	Settings.save_now()
 
 
+## ТЗ требует вертикальный экран: режим по умолчанию обязан жёстко включать
+## портрет, а не «как повернётся» (сенсор), иначе игра снова открывается боком.
+func test_screen_orientation_defaults_to_portrait() -> void:
+	var saved := Settings.orientation_mode
+	Settings.orientation_mode = 0
+	assert_eq(Settings.orientation_constant(), DisplayServer.SCREEN_PORTRAIT,
+		"по умолчанию экран вертикальный")
+	Settings.orientation_mode = 1
+	assert_eq(Settings.orientation_constant(), DisplayServer.SCREEN_LANDSCAPE,
+		"второй режим кнопки - горизонтальный")
+	Settings.orientation_mode = 2
+	assert_eq(Settings.orientation_constant(), DisplayServer.SCREEN_SENSOR,
+		"третий режим кнопки - автоповорот")
+	Settings.orientation_mode = saved
+
+
 func test_save_manager_records_the_driving_profile() -> void:
 	var before_km := Save.total_distance_km
 	Save.record_distance(1.5)

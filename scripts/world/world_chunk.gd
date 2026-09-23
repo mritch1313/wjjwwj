@@ -8,19 +8,22 @@ extends Node3D
 ## *retiered* - the same chunk may come back at a lower LOD when the player drives
 ## away, without being freed and regenerated.
 ##
-## Geometry arrives as four layers (terrain, roads, structures, foliage), each in
-## its own MeshInstance3D: the layers have different render flags (foliage uses
-## alpha scissor and casts no shadow, structures cast shadows) and different LOD
-## lifetimes, which one merged mesh could not express.
+## Geometry arrives as five layers (terrain, roads, structures, props, foliage),
+## each in its own MeshInstance3D: the layers have different render flags (foliage
+## uses alpha scissor and casts no shadow, structures cast shadows) and different
+## LOD lifetimes, which one merged mesh could not express.  Мелкий уличный декор
+## (скамейки, урны, столбы, вывески) вынесен в слой Props: он состоит из десятка
+## разных материалов, то есть из десятка вызовов отрисовки, а на расстоянии
+## больше сотни метров всё равно не различим.
 
 ## Layer order of WorldGenerator.generate_chunk()["meshes"].
-enum Layer { TERRAIN, ROADS, STRUCTURES, FOLIAGE }
+enum Layer { TERRAIN, ROADS, STRUCTURES, PROPS, FOLIAGE }
 
 const TIER_NEAR := 0
 const TIER_MID := 1
 const TIER_FAR := 2
 
-const LAYER_NAMES := ["Terrain", "Roads", "Structures", "Foliage"]
+const LAYER_NAMES := ["Terrain", "Roads", "Structures", "Props", "Foliage"]
 
 var cell: Vector2i = Vector2i.ZERO
 var tier: int = TIER_NEAR
@@ -71,9 +74,9 @@ func _ensure_nodes() -> void:
 	for index in range(LAYER_NAMES.size()):
 		var instance := MeshInstance3D.new()
 		instance.name = LAYER_NAMES[index]
-		if index == Layer.FOLIAGE:
-			# Foliage is alpha-scissored: no shadows (mobile fill rate) and it is
-			# allowed to disappear at distance before the opaque geometry does.
+		if index == Layer.FOLIAGE or index == Layer.PROPS:
+			# Foliage is alpha-scissored, props are tiny: no shadows (mobile fill
+			# rate) and both may disappear earlier than the opaque geometry.
 			instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(instance)
 		_layers.append(instance)
@@ -147,7 +150,7 @@ func _apply_tier_flags() -> void:
 	# видна, а её отрисовка стоит прохода по всей геометрии среднего кольца.
 	for index in range(_layers.size()):
 		var instance := _layers[index]
-		if instance.mesh == null or index == Layer.FOLIAGE:
+		if instance.mesh == null or index == Layer.FOLIAGE or index == Layer.PROPS:
 			continue
 		instance.cast_shadow = (
 			GeometryInstance3D.SHADOW_CASTING_SETTING_ON if tier == TIER_NEAR
@@ -159,12 +162,16 @@ func _apply_tier_flags() -> void:
 ## дальностью (visibility_range_*), ещё до того, как стример успел выгрузить
 ## чанк.  Растительность убирается раньше остальных слоёв: она мелкая и
 ## заполняет экран, а её вклад в силуэт города нулевой.
-func set_cull_distances(structure_end_m: float, foliage_end_m: float) -> void:
+func set_cull_distances(structure_end_m: float, props_end_m: float, foliage_end_m: float) -> void:
 	if _layers.is_empty():
 		return
 	for index in range(_layers.size()):
 		var instance := _layers[index]
-		var end := foliage_end_m if index == Layer.FOLIAGE else structure_end_m
+		var end := structure_end_m
+		if index == Layer.FOLIAGE:
+			end = foliage_end_m
+		elif index == Layer.PROPS:
+			end = props_end_m
 		instance.visibility_range_end = end
 		# мягкое затухание, чтобы удалённый слой не исчезал рывком
 		instance.visibility_range_end_margin = maxf(end * 0.08, 4.0)

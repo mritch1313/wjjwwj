@@ -37,6 +37,9 @@ const STICK_DOWN_MIN_SPEED_MS := 12.0
 const STICK_DOWN_FORCE_N := 2600.0
 const WHEEL_COUNT := 4
 const GROUND_MASK := 1  # physics layer "world"
+## Сколько кадров после подъёма кнопкой «Y» машина не вращается в воздухе,
+## чтобы приземлиться на колёса (около секунды физики).
+const LIFT_GRACE_FRAMES := 60
 
 var config: VehicleConfig
 ## Marker used by the model factory and by the gameplay rules.
@@ -83,6 +86,9 @@ var _wheel_visuals: Array[Node3D] = []
 var _previous_forward: bool = true
 var _previous_surface: int = Surface.Type.ASPHALT
 var _recovering: bool = false
+## Кадры после подъёма кнопкой «Y»: в полёте гасим вращение, чтобы машина
+## возвращалась на колёса, а не падала на крышу.
+var _lift_grace_frames: int = 0
 var _visual_scene_path: String = ""
 
 
@@ -165,6 +171,12 @@ func vehicle_input() -> VehicleInput:
 
 ## ------------------------------------------------------------------- physics
 func _physics_process(delta: float) -> void:
+	if _lift_grace_frames > 0:
+		_lift_grace_frames -= 1
+		# Машина висит после подъёма: без гашения угловой скорости она
+		# кувыркалась в воздухе и приземлялась на крышу.
+		if grounded_wheels == 0:
+			angular_velocity = Vector3.ZERO
 	if _recovering or freeze:
 		return
 	_update_steering(delta)
@@ -582,6 +594,10 @@ func reset_car(onto_road: bool = true) -> void:
 	# полотна и даём подвеске осесть (высоты старой системы координат здесь
 	# означали бы падение с высоты более метра).
 	target.y += config.ground_clearance_m + 0.3
+	# Свободное место: если точка занята геометрией (дом, столб, дерево), машина
+	# раньше появлялась внутри объекта и её выбрасывало.  Теперь корпус
+	# поднимается над ближайшим препятствием.
+	target = _free_placement(target)
 	global_transform = Transform3D(Basis(Vector3.UP, yaw), target)
 	linear_velocity = Vector3.ZERO
 	angular_velocity = Vector3.ZERO
@@ -606,6 +622,50 @@ func _finish_recovery() -> void:
 ## Alias used by the game flow / pause menu ("return the car to the road").
 func recover_to_road() -> void:
 	reset_car(true)
+
+
+## Поднимает машину на `meters` вверх, сохраняя ориентацию и скорость по
+## горизонтали: это аварийный «подъём» из геометрии (кнопка «Y» в настройках),
+## а не телепорт - игрок может нажимать её сколько угодно раз и забираться выше.
+## Вертикальную скорость обнуляем, чтобы машину не подбрасывало.
+func lift_up(meters: float) -> void:
+	if meters <= 0.0:
+		return
+	# Курс сохраняем, крен и тангаж выпрямляем: машину поднимают из геометрии,
+	# и она должна встать ровно, а не «вверх колёсами» над препятствием.
+	var forward := forward_direction()
+	if forward.length_squared() < 0.0001:
+		forward = Vector3.FORWARD
+	var yaw := atan2(forward.x, forward.z)
+	var target := global_position + Vector3.UP * meters
+	global_transform = Transform3D(Basis(Vector3.UP, yaw), target)
+	linear_velocity = Vector3(linear_velocity.x, 0.0, linear_velocity.z)
+	angular_velocity = Vector3.ZERO
+	_lift_grace_frames = LIFT_GRACE_FRAMES
+
+
+## Ищет свободное место над точкой: корпус машины (1.9 x 1.1 x 4.6) проверяется
+## физическим запросом, и при пересечении с геометрией точка поднимается шагами.
+func _free_placement(candidate: Vector3) -> Vector3:
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return candidate
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(1.9, 1.1, 4.6)
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = shape
+	query.collision_mask = 1
+	query.margin = 0.05
+	query.exclude = [get_rid()]
+	var lift := 0.0
+	for attempt in range(6):
+		# Коробка ставится НАД точкой: земля под колёсами не должна считаться
+		# препятствием, иначе машина всегда «поднималась бы» из-под земли.
+		query.transform = Transform3D(Basis(), candidate + Vector3.UP * (lift + 0.55))
+		if space.intersect_shape(query, 1).is_empty():
+			return candidate + Vector3.UP * lift
+		lift += 0.8
+	return candidate + Vector3.UP * lift
 
 
 func _on_body_entered(body: Node) -> void:

@@ -15,6 +15,8 @@ signal resume_requested()
 signal quit_to_free_roam_requested()
 signal quality_changed(index: int)
 signal paint_changed(index: int)
+## Кнопка «Y» в настройках: поднять машину игрока на метр (сколько угодно раз).
+signal lift_car_requested(meters: float)
 
 const BASE_WIDTH := 720.0
 
@@ -43,6 +45,8 @@ var _loading_bar: ColorRect = null
 var _loading_bar_bg: ColorRect = null
 var _settings_hint: Label = null
 var _orientation_button: Button = null
+## Сколько раз нажимали «Y» в настройках: в сообщении видно суммарный подъём.
+var _lift_count: int = 0
 var _loading_progress: float = 0.0
 
 
@@ -146,6 +150,8 @@ func _build_settings_panel() -> void:
 	_button(box, L10n.t("hud_scale"), _cycle_hud_scale, 17)
 	_button(box, L10n.t("language"), _toggle_language, 17)
 	_orientation_button = _button(box, _orientation_label(), _cycle_orientation, 17)
+	_button(box, L10n.t("lift_car"), _lift_car, 17)
+	_title(box, L10n.t("lift_car_hint"), 12, Color(0.66, 0.75, 0.88))
 	_settings_hint = _title(box, "", 13, Color(0.7, 0.8, 0.95))
 	_button(box, L10n.t("close"), func() -> void: _show_settings(false), 20, 0.0, 8.0)
 	_settings_panel.visible = false
@@ -370,6 +376,13 @@ func _cycle_hud_scale() -> void:
 ## Ориентация экрана: по умолчанию портрет из проекта, но игрок может
 ## принудительно выбрать вертикальную или горизонтальную - на телефоне это
 ## вопрос удобства, а не только графики.
+## Каждое нажатие добавляет машине метр высоты (см. MainScene._on_lift_car_requested).
+func _lift_car() -> void:
+	_lift_count += 1
+	lift_car_requested.emit(1.0)
+	Game.toast.emit(L10n.t("lift_car_applied") % _lift_count)
+
+
 func _cycle_orientation() -> void:
 	Settings.orientation_mode = (Settings.orientation_mode + 1) % 3
 	Settings.apply_orientation()
@@ -382,11 +395,11 @@ func _cycle_orientation() -> void:
 func _orientation_label() -> String:
 	match Settings.orientation_mode:
 		1:
-			return "%s: %s" % [L10n.t("orientation"), L10n.t("orientation_portrait")]
-		2:
 			return "%s: %s" % [L10n.t("orientation"), L10n.t("orientation_landscape")]
-		_:
+		2:
 			return "%s: %s" % [L10n.t("orientation"), L10n.t("orientation_auto")]
+		_:
+			return "%s: %s" % [L10n.t("orientation"), L10n.t("orientation_portrait")]
 
 
 func _toggle_language() -> void:

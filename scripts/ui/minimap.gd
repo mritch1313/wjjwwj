@@ -8,10 +8,10 @@ extends Control
 ## cost more than the world itself.  The view is rotated so that the car's heading
 ## always points up, which is what players expect from a chase game.
 
-const REFRESH_INTERVAL_S := 0.5
+const REFRESH_INTERVAL_S := 0.8
 ## Порог перерисовки: смещение игрока и поворот, при которых карта обновляется.
-const REDRAW_DISTANCE_M := 2.5
-const REDRAW_ANGLE_RAD := 0.09  # ~5 градусов
+const REDRAW_DISTANCE_M := 4.0
+const REDRAW_ANGLE_RAD := 0.2  # ~11 градусов
 
 var player: Node3D = null
 var police_manager: PoliceManager = null
@@ -81,7 +81,7 @@ func _rebuild_cache() -> void:
 		return
 	var center := player.global_position
 	_cache_center = center
-	var ids := network.segments_in_area(center, range_m * 1.2)
+	var ids := network.segments_in_area(center, range_m * 1.05)
 	for id in ids:
 		var segment: RoadNetwork.Segment = network.segments[id]
 		if segment.points.size() < 2:
