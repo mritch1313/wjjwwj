@@ -214,17 +214,17 @@ func _run() -> void:
 		_check(lifted > 2.5 and lifted < 3.5, "кнопка «Y» подняла машину на %.2f м за три нажатия" % lifted)
 	else:
 		_check(false, "меню настроек доступно из сцены (для кнопки «Y»)")
-	# Возвращаем машину ровно туда, где она стояла до подъёма (там заведомо
-	# свободно), и гасим скорости: проверка разгона ниже должна начинаться
-	# с земли, а не с трёх метров над дорогой.
-	player.global_transform = lift_origin
-	player.linear_velocity = Vector3.ZERO
-	player.angular_velocity = Vector3.ZERO
-	# Даём машине полсекунды, чтобы подвеска нашла землю после возврата.
-	for frame in range(int(PHYSICS_FPS * 0.5)):
-		await get_tree().physics_frame
-	_check(player.global_position.distance_to(lift_origin.origin) < 3.0,
-		"после кнопки «Y» машина вернулась на исходное место (%.1f м)" % player.global_position.distance_to(lift_origin.origin))
+	# Возвращаем машину штатным путём игры: reset_car откладывает установку на
+	# свободное место в физический кадр, а прямое присваивание transform у
+	# RigidBody3D из корутины оставляло машину висеть в воздухе и перевёрнутой.
+	player.reset_car(true)
+	await _wait_for(
+		func() -> bool: return player.grounded_wheels > 0,
+		PHYSICS_FPS * 2,
+		"машина встала на колёса после возврата"
+	)
+	_check(player.global_position.distance_to(lift_origin.origin) < 12.0,
+		"после кнопки «Y» машина вернулась на дорогу (%.1f м)" % player.global_position.distance_to(lift_origin.origin))
 	print("       после «Y»: y=%.2f земля=%.2f колёс=%d наклон=%.1f° темп %.1f км/ч" % [
 		player.global_position.y,
 		world.terrain().height_at(player.global_position.x, player.global_position.z),

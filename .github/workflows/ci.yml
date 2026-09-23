@@ -122,8 +122,11 @@ jobs:
       - name: Smoke test of the assembled game (world + car + police)
         run: |
           set -o pipefail
+          # `|| true`: провал смоука завершает Godot ненулевым кодом, и при
+          # `bash -e` шаг обрывался до разбора лога - в аннотации не попадало
+          # ничего, кроме «exit code 1».  Теперь лог всегда разбирается ниже.
           timeout 1200 ~/godot-bin/Godot_v${GODOT_RELEASE}_linux.x86_64 --headless --path . \
-            res://tools/smoke_run.tscn 2>&1 | tee /tmp/smoke.log
+            res://tools/smoke_run.tscn 2>&1 | tee /tmp/smoke.log || true
           if grep -q "SCRIPT ERROR" /tmp/smoke.log; then
             DETAILS=$(grep -A 2 "SCRIPT ERROR" /tmp/smoke.log | head -12 | tr '\n' ';')
             echo "::error::ошибка скрипта в смоуке: $DETAILS"
