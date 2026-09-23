@@ -148,7 +148,9 @@ func _add_ribbon(
 	detailed: bool = true
 ) -> void:
 	var half_width := segment.width * 0.5
-	var deck_lift := 0.03
+	# 7 см: шаг глубины на дистанции 400-600 м порядка 3 см, при меньшем
+	# подъёме полотно и земля мерцали вдали (z-fighting).
+	var deck_lift := 0.07
 	var is_elevated := segment.elevated and segment.deck_height > 1.0
 	var uv_period := 8.0
 	if segment.type == RoadNetwork.RoadType.HIGHWAY:
@@ -328,8 +330,8 @@ func _add_shoulders(
 			var a_out := a_edge + (a["lateral"] as Vector3) * sign * shoulder
 			var b_out := b_edge + (b["lateral"] as Vector3) * sign * shoulder
 			# drape the shoulder onto the terrain so the road does not float
-			a_out = Vector3(a_out.x, terrain.height_at(a_out.x, a_out.z) + 0.02, a_out.z)
-			b_out = Vector3(b_out.x, terrain.height_at(b_out.x, b_out.z) + 0.02, b_out.z)
+			a_out = Vector3(a_out.x, terrain.height_at(a_out.x, a_out.z) + 0.06, a_out.z)
+			b_out = Vector3(b_out.x, terrain.height_at(b_out.x, b_out.z) + 0.06, b_out.z)
 			if sign > 0.0:
 				builder.add_quad(
 					material, a_edge, b_edge, b_out, a_out, Color(0.92 + rng.randf() * 0.16, 0.92, 0.9),
@@ -439,7 +441,7 @@ func _add_intersection(builder: MeshBuilder, node: RoadNetwork.RoadNode, rng: Ra
 	for segment_id in node.segments:
 		max_width = maxf(max_width, network.segments[segment_id].width)
 	var size := max_width + 6.0
-	var y := terrain.height_at(node.position.x, node.position.z) + 0.035
+	var y := terrain.height_at(node.position.x, node.position.z) + 0.09
 	var corners := [
 		Vector3(-size * 0.5, 0.0, -size * 0.5),
 		Vector3(size * 0.5, 0.0, -size * 0.5),
@@ -468,7 +470,7 @@ func _add_intersection(builder: MeshBuilder, node: RoadNetwork.RoadNode, rng: Ra
 		var stripes := int(maxf(segment.width / 1.15, 3.0))
 		for i in range(stripes):
 			var offset := (float(i) - float(stripes - 1) * 0.5) * 1.15
-			var stripe_center := Vector3(node.position.x, terrain.height_at(node.position.x, node.position.z) + 0.05, node.position.z) + direction * (segment.width * 0.5 + 1.4) + lateral * offset
+			var stripe_center := Vector3(node.position.x, terrain.height_at(node.position.x, node.position.z) + 0.11, node.position.z) + direction * (segment.width * 0.5 + 1.4) + lateral * offset
 			builder.add_quad(
 				"marking_white",
 				stripe_center - lateral * 0.32 - direction * 0.45,

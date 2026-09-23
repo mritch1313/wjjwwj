@@ -80,7 +80,7 @@ func _ensure_nodes() -> void:
 		_camera = Camera3D.new()
 		_camera.name = "Camera"
 		_camera.fov = base_fov
-		_camera.near = 0.35
+		_camera.near = 0.5  # точность глубины вдали (полотно/земля не мерцают)
 		_camera.far = 1600.0
 		_spring.add_child(_camera)
 
