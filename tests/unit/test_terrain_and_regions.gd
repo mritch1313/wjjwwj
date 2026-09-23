@@ -157,3 +157,33 @@ func test_chunk_generation_is_resource_free_and_mesh_data_round_trips() -> void:
 		if built != null and built.get_surface_count() > 0:
 			far_meshes += 1
 	assert_gt(float(far_meshes), 0.0, "хотя бы один слой дальнего чанка содержит геометрию")
+
+
+## Генерация чанка обязана дробиться на порции: если чанк собирается одним
+## куском, кадр замирает на всё время сборки (это и была главная жалоба на
+## лаги при подгрузке).
+func test_chunk_generation_is_split_into_small_steps() -> void:
+	var generator: WorldGenerator = WorldFixture.generator()
+	var job := generator.begin_chunk(Vector2i(10, 10), WorldGenerator.TIER_NEAR)
+	var steps := 0
+	var worst_ms := 0
+	while true:
+		var started := Time.get_ticks_msec()
+		var done := generator.step_chunk(job)
+		worst_ms = maxi(worst_ms, Time.get_ticks_msec() - started)
+		steps += 1
+		if done:
+			break
+		if steps > 1000:
+			break
+	assert_gt(float(steps), 8.0, "чанк собирается многими порциями (шагов %d)" % steps)
+	var data := generator.result_from_job(job)
+	assert_eq((data["mesh_data"] as Array).size(), 4, "порционный путь даёт те же четыре слоя")
+	assert_gt(float((data["colliders"] as Array).size()), 0.0, "коллайдеры собраны")
+	# Полная сборка того же чанка для сравнения: самый длинный шаг обязан быть
+	# заметно короче её (иначе дробление ничего не даёт).
+	var full_started := Time.get_ticks_msec()
+	generator.generate_chunk_data(Vector2i(10, 10), WorldGenerator.TIER_NEAR)
+	var full_ms := Time.get_ticks_msec() - full_started
+	assert_gt(float(full_ms), 0.0, "полная сборка измеряется")
+	assert_lt(float(worst_ms), float(full_ms) * 0.5, "самый длинный шаг (%d мс) короче половины полной сборки (%d мс)" % [worst_ms, full_ms])

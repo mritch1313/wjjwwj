@@ -26,6 +26,33 @@ const TIER_FAR := 2
 ## line be refined later without rebuilding the mesh type.
 const WATER_GRID_STEPS := 24
 
+## ---------------------------------------------------------- chunk jobs ------
+## Пошаговая сборка чанка.
+##
+## Чанк целиком стоит около 0.65 с (рельеф, дороги, застройка, растительность),
+## и один такой вызов замораживал кадр.  Джоб хранит всё состояние между
+## шагами: мелкие порции рельефа, дорог и кварталов, между которыми кадр
+## успевает отрисоваться.  Стример выполняет порции по бюджету времени
+## (см. WorldStreamer), поэтому подгрузка не видна глазу.
+const STAGE_SAMPLE := 0
+const STAGE_QUADS := 1
+const STAGE_GROUND := 2
+const STAGE_ROADS := 3
+const STAGE_JUNCTIONS := 4
+const STAGE_BLOCKS := 5
+const STAGE_FURNITURE := 6
+const STAGE_LANDMARKS := 7
+const STAGE_SCENERY := 8
+const STAGE_FINISH := 9
+const STAGE_DONE := 10
+
+## Сколько работы делается за один шаг.  Порции подобраны так, чтобы шаг занимал
+## единицы миллисекунд даже на слабом телефоне.
+const SAMPLE_ROWS_PER_STEP := 6
+const QUAD_ROWS_PER_STEP := 8
+const ROAD_SEGMENTS_PER_STEP := 3
+const JUNCTIONS_PER_STEP := 2
+
 var config: WorldConfig
 var terrain: TerrainField
 var network: RoadNetwork
@@ -39,13 +66,6 @@ var world_build_time_ms: float = 0.0
 
 var generated_chunks: int = 0
 var generated_triangles: int = 0
-## Сетка высот последнего построенного рельефа (см. _build_terrain) - из неё
-## строится коллизия земли, чтобы не опрашивать рельеф дважды.
-var _ground_grid_base_x: float = 0.0
-var _ground_grid_base_z: float = 0.0
-var _ground_grid_step: float = 1.0
-var _ground_grid_rows: int = 0
-var _ground_grid_heights: PackedFloat32Array = PackedFloat32Array()
 
 
 func _init(world_config: WorldConfig) -> void:
@@ -100,100 +120,190 @@ func generate_chunk(cell: Vector2i, tier: int) -> Dictionary:
 ## Содержимое чанка без единого обращения к ресурсам/материалам: только данные
 ## геометрии, коллайдеров и статистика.  Именно эту функцию можно безопасно
 ## вызывать из WorkerThreadPool.
+## Содержимое чанка без единого обращения к ресурсам: только данные геометрии,
+## коллайдеров и статистика.  Это синхронный путь - он собирает чанк целиком,
+## шаг за шагом, и нужен тестам и заставке.
 func generate_chunk_data(cell: Vector2i, tier: int) -> Dictionary:
-	var started := Time.get_ticks_msec()
-	var origin := config.chunk_origin(cell)
-	var rect := Rect2(Vector2(origin.x, origin.z), Vector2(config.chunk_size_m, config.chunk_size_m))
-	var rng := MathUtils.rng_for(cell, config.seed)
-	var colliders: Array = []
+	var job := begin_chunk(cell, tier)
+	var guard := 0
+	while not step_chunk(job) and guard < 4096:
+		guard += 1
+	return result_from_job(job)
 
-	var terrain_builder := MeshBuilder.new()
-	_build_terrain(terrain_builder, rect, tier, rng)
-	var ground_collision := _build_ground_collision(rect, tier, origin)
 
-	var road_builder_local := MeshBuilder.new()
-	road_builder.build_chunk(road_builder_local, rect, rng, tier)
+## Готовит джоб: всё, что можно посчитать дёшево, считается сразу.
+func begin_chunk(cell: Vector2i, tier: int) -> ChunkJob:
+	var job := ChunkJob.new()
+	job.cell = cell
+	job.tier = tier
+	job.origin = config.chunk_origin(cell)
+	job.rect = Rect2(Vector2(job.origin.x, job.origin.z), Vector2(config.chunk_size_m, config.chunk_size_m))
+	job.rng = MathUtils.rng_for(cell, config.seed)
+	job.started_ms = Time.get_ticks_msec()
+	job.terrain_builder = MeshBuilder.new()
+	job.road_builder = MeshBuilder.new()
+	job.structures = MeshBuilder.new()
+	job.foliage = MeshBuilder.new()
+	var params := _terrain_params(tier, job.rect)
+	job.terrain_step = float(params["step"])
+	job.terrain_count = int(params["count"])
+	job.terrain_rows = int(params["rows"])
+	job.base_x = float(params["base_x"])
+	job.base_z = float(params["base_z"])
+	job.heights.resize(job.terrain_rows * job.terrain_rows)
+	job.materials.resize(job.terrain_rows * job.terrain_rows)
+	job.tints.resize(job.terrain_rows * job.terrain_rows)
+	job.road_detailed = tier <= TIER_NEAR
+	job.road_segments = road_builder.collect_segments(job.rect)
+	if job.road_detailed:
+		job.junctions = road_builder.collect_junctions(job.rect)
+	job.city_enabled = tier <= TIER_MID
+	job.scenery_enabled = tier <= TIER_MID and terrain.urban_at(job.rect.get_center().x, job.rect.get_center().y) < 0.65
+	job.block_rows = city_builder.block_row_range(job.rect)
+	job.block_columns = city_builder.block_column_range(job.rect)
+	return job
 
-	# Structures (opaque, casts shadows) and foliage (alpha scissor, no shadows)
-	# live in separate mesh instances so their render flags can differ.
-	var structures := MeshBuilder.new()
-	var foliage := MeshBuilder.new()
-	var buildings := 0
-	var urban := terrain.urban_at(rect.get_center().x, rect.get_center().y)
-	if tier <= TIER_MID:
-		buildings = city_builder.build_chunk(structures, rect, tier, rng, colliders)
-		city_builder.build_street_furniture(structures, rect, tier, rng, colliders)
-		landmark_builder.build_chunk(structures, rect, tier, rng, colliders)
-		if urban < 0.65:
-			scenery_builder.build_chunk(foliage, rect, tier, rng, colliders)
 
-	# Счётчик чанков увеличивает стример в главном потоке (см. WorldStreamer):
-	# из фоновых потоков инкремент поля - гонка.
-	var mesh_data: Array = [
-		terrain_builder.commit_data(),
-		road_builder_local.commit_data(),
-		structures.commit_data(),
-		foliage.commit_data(),
-	]
+## Выполняет одну порцию работы.  Возвращает true, когда чанк полностью собран.
+func step_chunk(job: ChunkJob) -> bool:
+	if job == null:
+		return true
+	match job.stage:
+		STAGE_SAMPLE:
+			var last_row := mini(job.cursor + SAMPLE_ROWS_PER_STEP, job.terrain_rows)
+			_sample_terrain_rows(job, job.cursor, last_row)
+			job.cursor = last_row
+			if job.cursor >= job.terrain_rows:
+				job.stage = STAGE_QUADS
+				job.cursor = 0
+		STAGE_QUADS:
+			var last_quad := mini(job.cursor + QUAD_ROWS_PER_STEP, job.terrain_count)
+			_build_terrain_quads(job, job.cursor, last_quad)
+			job.cursor = last_quad
+			if job.cursor >= job.terrain_count:
+				job.stage = STAGE_GROUND
+				job.cursor = 0
+		STAGE_GROUND:
+			job.ground_collision = _ground_collision_for_job(job)
+			job.stage = STAGE_ROADS
+			job.cursor = 0
+		STAGE_ROADS:
+			var last_segment := mini(job.cursor + ROAD_SEGMENTS_PER_STEP, job.road_segments.size())
+			road_builder.build_segment_slice(
+				job.road_builder, job.road_segments, job.cursor, last_segment,
+				job.rect, job.rng, job.colliders, job.road_detailed
+			)
+			job.cursor = last_segment
+			if job.cursor >= job.road_segments.size():
+				job.stage = STAGE_JUNCTIONS
+				job.cursor = 0
+		STAGE_JUNCTIONS:
+			var last_junction := mini(job.cursor + JUNCTIONS_PER_STEP, job.junctions.size())
+			road_builder.build_junction_slice(job.road_builder, job.junctions, job.cursor, last_junction, job.rng)
+			job.cursor = last_junction
+			if job.cursor >= job.junctions.size():
+				job.stage = STAGE_BLOCKS
+				job.cursor = job.block_rows.x
+		STAGE_BLOCKS:
+			var last_block_row := mini(job.cursor + 1, job.block_rows.y)
+			if job.city_enabled and job.block_rows.x <= job.block_rows.y:
+				job.buildings += city_builder.build_block_slice(
+					job.structures, job.rect, job.tier, job.rng, job.colliders,
+					job.cursor, last_block_row, job.block_columns.x, job.block_columns.y
+				)
+			job.cursor = last_block_row + 1
+			if job.cursor > job.block_rows.y:
+				job.stage = STAGE_FURNITURE
+		STAGE_FURNITURE:
+			if job.city_enabled:
+				city_builder.build_street_furniture(job.structures, job.rect, job.tier, job.rng, job.colliders)
+			job.stage = STAGE_LANDMARKS
+		STAGE_LANDMARKS:
+			if job.city_enabled:
+				landmark_builder.build_chunk(job.structures, job.rect, job.tier, job.rng, job.colliders)
+			job.stage = STAGE_SCENERY
+		STAGE_SCENERY:
+			if job.scenery_enabled:
+				scenery_builder.build_chunk(job.foliage, job.rect, job.tier, job.rng, job.colliders)
+			job.stage = STAGE_FINISH
+		STAGE_FINISH:
+			job.mesh_data = [
+				job.terrain_builder.commit_data(),
+				job.road_builder.commit_data(),
+				job.structures.commit_data(),
+				job.foliage.commit_data(),
+			]
+			job.stage = STAGE_DONE
+		_:
+			return true
+	return job.stage == STAGE_DONE
+
+
+## Собирает итоговый словарь чанка из готового джоба.
+func result_from_job(job: ChunkJob) -> Dictionary:
 	var shapes: Array = []
-	if ground_collision != null:
-		shapes.append(ground_collision)
-	shapes.append_array(colliders)
-	var elapsed := float(Time.get_ticks_msec() - started)
+	if not job.ground_collision.is_empty():
+		shapes.append(job.ground_collision)
+	shapes.append_array(job.colliders)
 	return {
-		"mesh_data": mesh_data,
+		"mesh_data": job.mesh_data,
 		"colliders": shapes,
-		"buildings": buildings,
-		"generation_ms": elapsed,
+		"buildings": job.buildings,
+		"generation_ms": float(Time.get_ticks_msec() - job.started_ms),
 	}
 
 
 ## --------------------------------------------------------------- terrain ---
-func _build_terrain(builder: MeshBuilder, rect: Rect2, tier: int, rng: RandomNumberGenerator) -> void:
+func _terrain_params(tier: int, rect: Rect2) -> Dictionary:
 	var step := terrain_quad_step(tier)
 	var count := int(ceil(config.chunk_size_m / step))
 	var actual_step := config.chunk_size_m / float(count)
-	# Global sampling grid: identical vertices in the overlap between chunks.
-	var base_x := floorf(rect.position.x / actual_step) * actual_step
-	var base_z := floorf(rect.position.y / actual_step) * actual_step
-	var rows := count + 1
-	var heights := PackedFloat32Array()
-	var materials: PackedStringArray = PackedStringArray()
-	var tints := PackedColorArray()
-	heights.resize(rows * rows)
-	# Сетку сэмплов запоминаем: коллизия земли строится из неё же, а не опрашивает
-	# рельеф заново (это была самая дорогая часть генерации городского чанка).
-	_ground_grid_base_x = base_x
-	_ground_grid_base_z = base_z
-	_ground_grid_step = actual_step
-	_ground_grid_rows = rows
-	materials.resize(rows * rows)
-	tints.resize(rows * rows)
-	for iz in range(rows):
+	return {
+		# Global sampling grid: identical vertices in the overlap between chunks.
+		"step": actual_step,
+		"count": count,
+		"rows": count + 1,
+		"base_x": floorf(rect.position.x / actual_step) * actual_step,
+		"base_z": floorf(rect.position.y / actual_step) * actual_step,
+	}
+
+
+func _sample_terrain_rows(job: ChunkJob, from_row: int, to_row: int) -> void:
+	var rows := job.terrain_rows
+	for iz in range(from_row, to_row):
 		for ix in range(rows):
-			var x := base_x + float(ix) * actual_step
-			var z := base_z + float(iz) * actual_step
+			var x := job.base_x + float(ix) * job.terrain_step
+			var z := job.base_z + float(iz) * job.terrain_step
 			var index := iz * rows + ix
 			var height := terrain.height_at(x, z)
-			heights[index] = height
+			job.heights[index] = height
 			# Наклон для раскраски считается из уже посчитанных высот (см. ниже),
 			# отдельный сэмпл рельефа на вершину был чистой тратой времени.
 			var surface := terrain.surface_at(x, z, height)
-			materials[index] = terrain.terrain_material_at(x, z, surface)
-			tints[index] = terrain.terrain_tint_at(x, z)
-	_ground_grid_heights = heights
-	for iz in range(count):
+			job.materials[index] = terrain.terrain_material_at(x, z, surface)
+			job.tints[index] = terrain.terrain_tint_at(x, z)
+
+
+func _build_terrain_quads(job: ChunkJob, from_row: int, to_row: int) -> void:
+	var rows := job.terrain_rows
+	var count := job.terrain_count
+	var step := job.terrain_step
+	var base_x := job.base_x
+	var base_z := job.base_z
+	var heights := job.heights
+	var builder := job.terrain_builder
+	for iz in range(from_row, to_row):
 		for ix in range(count):
 			var i0 := iz * rows + ix
 			var i1 := i0 + 1
 			var i2 := i0 + rows + 1
 			var i3 := i0 + rows
-			if terrain.lake_at(base_x + (float(ix) + 0.5) * actual_step, base_z + (float(iz) + 0.5) * actual_step) > 0.45:
+			if terrain.lake_at(base_x + (float(ix) + 0.5) * step, base_z + (float(iz) + 0.5) * step) > 0.45:
 				continue  # the water plane covers it, skip the geometry
-			var p0 := Vector3(base_x + float(ix) * actual_step, heights[i0], base_z + float(iz) * actual_step)
-			var p1 := Vector3(base_x + float(ix + 1) * actual_step, heights[i1], base_z + float(iz) * actual_step)
-			var p2 := Vector3(base_x + float(ix + 1) * actual_step, heights[i2], base_z + float(iz + 1) * actual_step)
-			var p3 := Vector3(base_x + float(ix) * actual_step, heights[i3], base_z + float(iz + 1) * actual_step)
+			var p0 := Vector3(base_x + float(ix) * step, heights[i0], base_z + float(iz) * step)
+			var p1 := Vector3(base_x + float(ix + 1) * step, heights[i1], base_z + float(iz) * step)
+			var p2 := Vector3(base_x + float(ix + 1) * step, heights[i2], base_z + float(iz + 1) * step)
+			var p3 := Vector3(base_x + float(ix) * step, heights[i3], base_z + float(iz + 1) * step)
 			# split the quad along the shorter diagonal to avoid stretching
 			var split_forward := (p1 - p3).length_squared() < (p0 - p2).length_squared()
 			var uv_scale := 1.0 / 8.0
@@ -201,49 +311,46 @@ func _build_terrain(builder: MeshBuilder, rect: Rect2, tier: int, rng: RandomNum
 			var uv1 := Vector2(p1.x, p1.z) * uv_scale
 			var uv2 := Vector2(p2.x, p2.z) * uv_scale
 			var uv3 := Vector2(p3.x, p3.z) * uv_scale
-			var material := materials[i0]
+			var material := job.materials[i0]
 			# rock faces where the slope is high, otherwise follow the surface:
 			# центральная разность по готовой сетке высот вместо ещё одного запроса
-			var gradient_x := (heights[i1] - heights[i0]) / actual_step
-			var gradient_z := (heights[i3] - heights[i0]) / actual_step
+			var gradient_x := (heights[i1] - heights[i0]) / step
+			var gradient_z := (heights[i3] - heights[i0]) / step
 			var slope := clampf(sqrt(gradient_x * gradient_x + gradient_z * gradient_z), 0.0, 1.0)
 			if slope > 0.7:
 				material = "ground_rock"
 			if split_forward:
-				builder.add_triangle(material, p0, p1, p2, tints[i1], uv0, uv1, uv2)
-				builder.add_triangle(material, p0, p2, p3, tints[i3], uv0, uv2, uv3)
+				builder.add_triangle(material, p0, p1, p2, job.tints[i1], uv0, uv1, uv2)
+				builder.add_triangle(material, p0, p2, p3, job.tints[i3], uv0, uv2, uv3)
 			else:
-				builder.add_triangle(material, p0, p1, p3, tints[i1], uv0, uv1, uv3)
-				builder.add_triangle(material, p1, p2, p3, tints[i2], uv1, uv2, uv3)
+				builder.add_triangle(material, p0, p1, p3, job.tints[i1], uv0, uv1, uv3)
+				builder.add_triangle(material, p1, p2, p3, job.tints[i2], uv1, uv2, uv3)
 
 
-## Physics collision for the ground of the chunks the player can actually reach.
-##
-## A tri-mesh built from the *same* sampling grid as the visible terrain is used
-## instead of a HeightMapShape3D, because Godot's height-map shape always uses a
-## one-metre cell: a 192 m chunk needs a 193x193 height map (37k floats) and, if
-## the grid is stored at a coarser step, the shape silently covers only ~49 m of
-## the chunk and the car drives straight through the ground.
-##
-## Only the near/mid chunks get ground collision (the far ones are never driven
-## on), and the faces are emitted in world space, exactly like the terrain mesh.
-func _build_ground_collision(rect: Rect2, tier: int, origin: Vector3) -> Dictionary:
-	# Коллизия земли нужна на ВСЕХ уровнях: дальний чанк тоже находится внутри
-	# радиуса обзора, и машина на скорости успевает туда доехать раньше, чем
-	# стример повысит его уровень.  Раньше у дальних чанков коллизии не было
-	# вовсе - машина проваливалась сквозь землю "в пустоте" между чанками.
+## Physics collision for the ground.  A tri-mesh built from the *same* sampling
+## grid as the visible terrain is used instead of a HeightMapShape3D, because
+## Godot's height-map shape always uses a one-metre cell: a 192 m chunk needs a
+## 193x193 height map (37k floats) and, if the grid is stored at a coarser step,
+## the shape silently covers only ~49 m of the chunk and the car drives straight
+## through the ground.  Коллизия есть у всех уровней: машина успевает доехать до
+## дальнего чанка раньше, чем стример повысит его уровень.
+func _ground_collision_for_job(job: ChunkJob) -> Dictionary:
+	var step := terrain_quad_step(job.tier) if job.tier == TIER_NEAR else maxf(terrain_quad_step(job.tier), 8.0)
+	if job.tier > TIER_MID:
+		step = maxf(config.terrain_quad_far, 16.0)
+	if absf(job.terrain_step - step) < 0.001:
+		# Быстрый путь: сетка рельефа уже посчитана для меша (раньше коллизия
+		# опрашивала рельеф заново - почти десять секунд на городской чанк).
+		return _ground_collision_from_grid(
+			job.rect, job.origin, job.terrain_rows, job.terrain_step, job.base_x, job.base_z, job.heights
+		)
+	return _ground_collision_sampled(job.rect, job.tier, job.origin)
+
+
+func _ground_collision_sampled(rect: Rect2, tier: int, origin: Vector3) -> Dictionary:
 	var step := terrain_quad_step(tier) if tier == TIER_NEAR else maxf(terrain_quad_step(tier), 8.0)
 	if tier > TIER_MID:
-		# Дальний уровень: грубая сетка (~24 м). Машина на ней едет по крупному
-		# рельефу, а точную геометрию даёт ближний чанк, который подгружается
-		# быстрее, чем игрок успевает доехать.
 		step = maxf(config.terrain_quad_far, 16.0)
-	# Быстрый путь: рельеф этого же чанка только что сэмплирован для меша
-	# (та же сетка), значит коллизия просто повторяет его вершины.  Раньше
-	# коллизия опрашивала рельеф заново - 4-5 тысяч запросов по ~1.9 мс каждый,
-	# то есть почти десять секунд на один городской чанк.
-	if _ground_grid_rows > 0 and absf(_ground_grid_step - step) < 0.001:
-		return _ground_collision_from_grid(rect, origin)
 	var count := maxi(int(ceil(config.chunk_size_m / step)), 1)
 	var cell := config.chunk_size_m / float(count)
 	var heights := PackedFloat32Array()
@@ -268,34 +375,40 @@ func _build_ground_collision(rect: Rect2, tier: int, origin: Vector3) -> Diction
 			var h11 := heights[(iz + 1) * (count + 1) + ix + 1]
 			# Same diagonal split as the mesh (shorter diagonal wins), so what the
 			# wheels feel is what the player sees.
-			if absf(h00 + h11 - h10 - h01) < 0.0001 or 					Vector2(x1 - x0, z1 - z0).length() > 0.0:
+			var diagonal_p3 := Vector3(x0, h00, z0).distance_squared_to(Vector3(x1, h11, z1))
+			var diagonal_p2 := Vector3(x1, h10, z0).distance_squared_to(Vector3(x0, h01, z1))
+			if diagonal_p2 <= diagonal_p3:
+				faces[write] = Vector3(x0, h00, z0)
+				faces[write + 1] = Vector3(x1, h10, z0)
+				faces[write + 2] = Vector3(x0, h01, z1)
+				faces[write + 3] = Vector3(x1, h10, z0)
+				faces[write + 4] = Vector3(x1, h11, z1)
+				faces[write + 5] = Vector3(x0, h01, z1)
+			else:
 				faces[write] = Vector3(x0, h00, z0)
 				faces[write + 1] = Vector3(x1, h10, z0)
 				faces[write + 2] = Vector3(x1, h11, z1)
 				faces[write + 3] = Vector3(x0, h00, z0)
 				faces[write + 4] = Vector3(x1, h11, z1)
 				faces[write + 5] = Vector3(x0, h01, z1)
-				write += 6
+			write += 6
 	faces.resize(write)
-	return {
-		"shape": "trimesh",
-		"faces": faces,
-		"transform": Transform3D.IDENTITY,
-	}
+	return {"shape": "trimesh", "faces": faces, "transform": Transform3D.IDENTITY}
 
 
 ## Коллизия земли из уже готовой сетки рельефа: вершины совпадают с видимым
 ## мешем (то же разбиение по короткой диагонали), поэтому колёса чувствуют ровно
 ## то, что видит игрок.
-func _ground_collision_from_grid(rect: Rect2, origin: Vector3) -> Dictionary:
-	var rows := _ground_grid_rows
-	var step := _ground_grid_step
+func _ground_collision_from_grid(
+	rect: Rect2, origin: Vector3, rows: int, step: float, base_x: float, base_z: float,
+	heights: PackedFloat32Array
+) -> Dictionary:
 	# Сетка глобальная, поэтому её начало может лежать левее/выше чанка: ищем
 	# индекс первой вершины внутри чанка.
-	var first_x := maxi(int(floorf((origin.x - _ground_grid_base_x) / step)), 0)
-	var first_z := maxi(int(floorf((origin.z - _ground_grid_base_z) / step)), 0)
-	var last_x := mini(int(ceilf((origin.x + config.chunk_size_m - _ground_grid_base_x) / step)), rows - 2)
-	var last_z := mini(int(ceilf((origin.z + config.chunk_size_m - _ground_grid_base_z) / step)), rows - 2)
+	var first_x := maxi(int(floorf((origin.x - base_x) / step)), 0)
+	var first_z := maxi(int(floorf((origin.z - base_z) / step)), 0)
+	var last_x := mini(int(ceilf((origin.x + config.chunk_size_m - base_x) / step)), rows - 2)
+	var last_z := mini(int(ceilf((origin.z + config.chunk_size_m - base_z) / step)), rows - 2)
 	if last_x <= first_x or last_z <= first_z:
 		return {}
 	var faces := PackedVector3Array()
@@ -303,14 +416,14 @@ func _ground_collision_from_grid(rect: Rect2, origin: Vector3) -> Dictionary:
 	var write := 0
 	for iz in range(first_z, last_z):
 		for ix in range(first_x, last_x):
-			var x0 := _ground_grid_base_x + float(ix) * step
+			var x0 := base_x + float(ix) * step
 			var x1 := x0 + step
-			var z0 := _ground_grid_base_z + float(iz) * step
+			var z0 := base_z + float(iz) * step
 			var z1 := z0 + step
-			var h00 := _ground_grid_heights[iz * rows + ix]
-			var h10 := _ground_grid_heights[iz * rows + ix + 1]
-			var h01 := _ground_grid_heights[(iz + 1) * rows + ix]
-			var h11 := _ground_grid_heights[(iz + 1) * rows + ix + 1]
+			var h00 := heights[iz * rows + ix]
+			var h10 := heights[iz * rows + ix + 1]
+			var h01 := heights[(iz + 1) * rows + ix]
+			var h11 := heights[(iz + 1) * rows + ix + 1]
 			# То же разбиение по короткой диагонали, что у меша
 			var diagonal_p3 := Vector3(x0, h00, z0).distance_squared_to(Vector3(x1, h11, z1))
 			var diagonal_p2 := Vector3(x1, h10, z0).distance_squared_to(Vector3(x0, h01, z1))
@@ -361,3 +474,43 @@ func build_water_mesh() -> Mesh:
 				Vector3.UP
 			)
 	return builder.commit()
+
+
+class ChunkJob:
+	extends RefCounted
+
+	var cell: Vector2i = Vector2i.ZERO
+	var tier: int = 0
+	var rect: Rect2 = Rect2()
+	var origin: Vector3 = Vector3.ZERO
+	var rng: RandomNumberGenerator = null
+	var started_ms: int = 0
+	var stage: int = 0
+	var cursor: int = 0
+	var colliders: Array = []
+	var buildings: int = 0
+	var city_enabled: bool = false
+	var scenery_enabled: bool = false
+	# рельеф
+	var terrain_step: float = 1.0
+	var terrain_count: int = 0
+	var terrain_rows: int = 0
+	var base_x: float = 0.0
+	var base_z: float = 0.0
+	var heights: PackedFloat32Array = PackedFloat32Array()
+	var materials: PackedStringArray = PackedStringArray()
+	var tints: PackedColorArray = PackedColorArray()
+	# дороги
+	var road_segments: PackedInt32Array = PackedInt32Array()
+	var junctions: PackedInt32Array = PackedInt32Array()
+	var road_detailed: bool = false
+	# кварталы
+	var block_rows: Vector2i = Vector2i.ZERO
+	var block_columns: Vector2i = Vector2i.ZERO
+	# результат
+	var terrain_builder: MeshBuilder = null
+	var road_builder: MeshBuilder = null
+	var structures: MeshBuilder = null
+	var foliage: MeshBuilder = null
+	var ground_collision: Dictionary = {}
+	var mesh_data: Array = []

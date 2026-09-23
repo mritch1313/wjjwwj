@@ -33,6 +33,59 @@ func _init(world_config: WorldConfig, world_terrain: TerrainField) -> void:
 ## tier: 0 = полный профиль дороги вблизи, 1 и выше = только полотно
 ## (бордюры, тротуары, отбойники, разметка и водостоки с 200-400 м не видны,
 ## а стоят десятки тысяч треугольников в каждом городском чанке).
+## Геометрия части сегментов сети - для пошаговой генерации чанка: порядок
+## работы тот же, что в build_chunk(), поэтому результат не меняется.
+func build_segment_slice(
+	builder: MeshBuilder,
+	segment_ids: PackedInt32Array,
+	from_index: int,
+	to_index: int,
+	rect: Rect2,
+	rng: RandomNumberGenerator,
+	colliders: Array,
+	detailed: bool
+) -> void:
+	if network == null:
+		return
+	for index in range(from_index, mini(to_index, segment_ids.size())):
+		var segment := network.segments[segment_ids[index]]
+		for run in _clip_segment(segment, rect):
+			_add_ribbon(builder, segment, run, rng, colliders, detailed)
+
+
+## Перекрёстки порциями (см. build_segment_slice).
+func build_junction_slice(
+	builder: MeshBuilder, node_ids: PackedInt32Array, from_index: int, to_index: int, rng: RandomNumberGenerator
+) -> void:
+	if network == null:
+		return
+	for index in range(from_index, mini(to_index, node_ids.size())):
+		_add_intersection(builder, network.nodes[node_ids[index]], rng)
+
+
+## Сегменты сети, влияющие на чанк, и его перекрёстки: список считается один раз,
+## а строится по частям (см. build_segment_slice).
+func collect_segments(rect: Rect2) -> PackedInt32Array:
+	if network == null:
+		return PackedInt32Array()
+	var center := Vector3(rect.get_center().x, 0.0, rect.get_center().y)
+	var radius := rect.size.length() * 0.5 + 20.0
+	return network.segments_in_area(center, radius)
+
+
+func collect_junctions(rect: Rect2) -> PackedInt32Array:
+	var found := PackedInt32Array()
+	if network == null:
+		return found
+	for node in network.nodes:
+		if not node.is_junction:
+			continue
+		if not rect.has_point(Vector2(node.position.x, node.position.z)):
+			continue
+		found.append(node.id)
+	return found
+
+
 func build_chunk(builder: MeshBuilder, rect: Rect2, rng: RandomNumberGenerator, tier: int = 0) -> Array:
 	var colliders := []
 	if network == null:

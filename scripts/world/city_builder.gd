@@ -27,6 +27,53 @@ func _init(world_config: WorldConfig, world_terrain: TerrainField) -> void:
 
 
 ## Returns how many buildings were generated (for the debug overlay / tests).
+## Диапазоны строк кварталов, пересекающих чанк: считаются один раз, а сами
+## кварталы строятся порциями (см. build_block_slice).
+func block_row_range(rect: Rect2) -> Vector2i:
+	if network == null or network.city_grid_x.size() < 2:
+		return Vector2i.ZERO
+	var grid_x := network.city_grid_x
+	var grid_z := network.city_grid_z
+	var first_i := maxi(_index_for(grid_x, rect.position.x) - 1, 0)
+	var last_i := mini(_index_for(grid_x, rect.end.x) + 1, grid_x.size() - 2)
+	var first_j := maxi(_index_for(grid_z, rect.position.y) - 1, 0)
+	var last_j := mini(_index_for(grid_z, rect.end.y) + 1, grid_z.size() - 2)
+	return Vector2i(first_i, last_i) if first_i <= last_i else Vector2i.ZERO
+
+
+func block_column_range(rect: Rect2) -> Vector2i:
+	if network == null or network.city_grid_x.size() < 2:
+		return Vector2i.ZERO
+	var grid_z := network.city_grid_z
+	var first_j := maxi(_index_for(grid_z, rect.position.y) - 1, 0)
+	var last_j := mini(_index_for(grid_z, rect.end.y) + 1, grid_z.size() - 2)
+	return Vector2i(first_j, last_j) if first_j <= last_j else Vector2i.ZERO
+
+
+## Кварталы строк i_from..i_to (порция для пошаговой генерации).
+func build_block_slice(
+	builder: MeshBuilder,
+	rect: Rect2,
+	tier: int,
+	rng: RandomNumberGenerator,
+	colliders: Array,
+	i_from: int,
+	i_to: int,
+	j_first: int,
+	j_last: int
+) -> int:
+	if network == null or network.city_grid_x.size() < 2:
+		return 0
+	var buildings := 0
+	for i in range(i_from, i_to + 1):
+		for j in range(j_first, j_last + 1):
+			var block := _block_rect(i, j)
+			if not rect.intersects(block, true):
+				continue
+			buildings += _build_block(builder, block, i, j, tier, colliders, rect)
+	return buildings
+
+
 func build_chunk(
 	builder: MeshBuilder,
 	rect: Rect2,

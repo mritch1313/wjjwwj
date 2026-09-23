@@ -44,10 +44,14 @@ var mid_radius: float = 384.0
 var view_radius: float = 448.0
 
 var _pending: Array[Dictionary] = []
-## Генерация идёт в главном потоке, поэтому за один тик стримера строится не
-## больше `_max_generations` чанков и не дольше бюджета времени из пресета.
+## Активный джоб пошаговой генерации: чанк собирается порциями (см.
+## WorldGenerator.step_chunk), и за кадр на него тратится не больше
+## `_generation_budget_ms`.  Раньше чанк строился целиком, одним куском на
+## ~0.65 с, и кадр замирал.
+var _job: WorldGenerator.ChunkJob = null
+var _job_cell: Vector2i = Vector2i(-9999, -9999)
+var _job_tier: int = WorldGenerator.TIER_FAR
 var _generation_budget_ms: float = 6.0
-var _max_generations: int = 1
 var _last_center: Vector3 = Vector3(1e9, 0.0, 1e9)
 var _last_update: float = 0.0
 var _last_player_cell: Vector2i = Vector2i(-9999, -9999)
@@ -80,13 +84,10 @@ func _apply_radii() -> void:
 	var near_floor := config.chunk_size_m * (0.8 if quality.view_distance_m <= 360.0 else 1.05)
 	near_radius = maxf(view_radius * TIER_DISTANCE_FACTOR_NEAR, near_floor)
 	mid_radius = maxf(view_radius * TIER_DISTANCE_FACTOR_MID, config.chunk_size_m * 1.6)
-	_generation_budget_ms = quality.generation_budget_ms
-	# Генерация чанка идёт в главном потоке: второй поток использовать нельзя -
-	# те же объекты (рельеф, дороги, RNG) вызывает физика игрока каждый кадр, а
-	# одновременный вызов одних GDScript-объектов из двух потоков роняет движок
-	# (проверено: смоук-тест падал в signal 11).  Поэтому работа стримера
-	# ограничена одним чанком за тик.
-	_max_generations = 1 if quality.view_distance_m <= 360.0 else quality.max_generations_per_frame
+	# Бюджет генерации на кадр из пресета качества (5-8 мс).  Второй поток
+	# использовать нельзя: те же объекты (рельеф, дороги, RNG) вызывает физика
+	# игрока каждый кадр, а одновременный вызов одних GDScript-объектов из двух
+	# потоков роняет движок (проверено: смоук падал в signal 11).
 
 
 func apply_quality(quality: GraphicsQuality) -> void:
@@ -149,6 +150,9 @@ func set_camera_target(target: Node3D) -> void:
 func _process(delta: float) -> void:
 	if generator == null or camera_target == null:
 		return
+	# Порция генерации - каждый кадр, с бюджетом времени: подгрузка идёт
+	# маленькими шагами и не роняет кадры.
+	_step_active_job()
 	_last_update += delta
 	if _last_update < Perf.streamer_interval:
 		return
@@ -160,13 +164,13 @@ func _update_stream() -> void:
 	var center := camera_target.global_position
 	var cell := config.cell_of_position(center)
 	if cell == _last_player_cell and center.distance_to(_last_center) < config.chunk_size_m * 0.25:
-		_process_queue()
+		_announce_stream_state()
 		return
 	_last_player_cell = cell
 	_last_center = center
 	_apply_radii()
 	_rebuild_plan(center)
-	_process_queue()
+	_announce_stream_state()
 
 
 func _rebuild_plan(center: Vector3) -> void:
@@ -205,6 +209,8 @@ func _rebuild_plan(center: Vector3) -> void:
 	for cell in wanted.keys():
 		var entry: Dictionary = wanted[cell]
 		var tier := int(entry["tier"])
+		if cell == _job_cell:
+			continue  # этот чанк уже собирается пошагово
 		if chunks.has(cell):
 			var chunk: WorldChunk = chunks[cell]
 			if chunk.tier != tier:
@@ -246,21 +252,41 @@ func _sort_pending() -> void:
 	)
 
 
-func _process_queue() -> void:
+## Одна порция работы над активным чанком за кадр.  Когда чанк готов, из его
+## данных собираются меши (главный поток) и узел попадает в мир.
+func _step_active_job() -> void:
+	if _job == null:
+		_start_next_job()
+		return
+	var budget := maxf(_generation_budget_ms, 1.0)
+	var started := Time.get_ticks_msec()
+	while not generator.step_chunk(_job):
+		if Time.get_ticks_msec() - started >= budget:
+			return
+	_apply_chunk_data(_job.cell, _job_tier, generator.result_from_job(_job))
+	_job = null
+	_job_cell = Vector2i(-9999, -9999)
+
+
+func _start_next_job() -> void:
 	if _pending.is_empty():
+		return
+	var entry: Dictionary = _pending.pop_front()
+	var cell: Vector2i = entry["cell"]
+	_job = generator.begin_chunk(cell, int(entry["tier"]))
+	_job_cell = cell
+	_job_tier = int(entry["tier"])
+
+
+## Сообщает миру, что вокруг игрока всё построено (заставка и тесты ждут этот
+## сигнал).
+func _announce_stream_state() -> void:
+	if _pending.is_empty() and _job == null:
 		if not _stream_complete_sent and _warmup_done:
 			_stream_complete_sent = true
 			stream_complete.emit()
 		return
 	_stream_complete_sent = false
-	var started := Time.get_ticks_msec()
-	var generated := 0
-	while not _pending.is_empty() and generated < _max_generations:
-		if generated > 0 and Time.get_ticks_msec() - started > _generation_budget_ms:
-			break
-		var entry: Dictionary = _pending.pop_front()
-		_build_chunk(entry["cell"], int(entry["tier"]))
-		generated += 1
 
 
 ## Создаёт меши из данных чанка (главный поток) и наполняет узел чанка.
