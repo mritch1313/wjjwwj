@@ -28,13 +28,26 @@ func _init(world_terrain: TerrainField, world_regions: RegionMap) -> void:
 func build() -> Dictionary:
 	var builder := MeshBuilder.new()
 	_build_shell(builder)
-	var skyline := _build_skyline(builder)
+	# Силуэт города НЕ запекается в меш подложки: это десятки одинаковых коробок
+	# одного материала, поэтому они отдаются как MultiMesh (одна геометрия и один
+	# вызов отрисовки вместо тридцати четырёх копий в вершинном буфере).
+	var skyline := _skyline_transforms()
 	var triangles := builder.triangle_count
 	return {
 		"mesh": builder.commit(),
 		"triangles": triangles,
-		"skyline_buildings": skyline,
+		"skyline_buildings": skyline.size(),
+		"skyline_transforms": skyline,
+		"skyline_mesh": skyline_mesh(),
 	}
+
+
+## Единичный куб для MultiMesh: размер каждой высотки задаётся масштабом в её
+## трансформации, поэтому вся геометрия силуэта - это 12 треугольников.
+static func skyline_mesh() -> Mesh:
+	var builder := MeshBuilder.new()
+	builder.add_box("city_silhouette", Transform3D(), Vector3.ONE, Color(0.30, 0.33, 0.40))
+	return builder.commit()
 
 
 ## Ring of terrain between INNER_RADIUS and OUTER_RADIUS.  The inner edge is not
@@ -76,14 +89,14 @@ func _color_at(point: Vector3, fade: float) -> Color:
 	return base.lerp(Color(0.62, 0.68, 0.76), fade * 0.55)
 
 
-## Distant city silhouette: a handful of tall boxes around the city centre.
-func _build_skyline(builder: MeshBuilder) -> int:
+## Трансформации высоток дальнего силуэта (позиция, поворот и масштаб-размер).
+func _skyline_transforms() -> Array:
 	var rng := MathUtils.rng_for(Vector2i(999, 999), 7)
 	var center := Vector2.ZERO
 	if region_map != null and region_map.config != null:
 		center = Vector2(0.0, 0.0)
-	var count := 34
-	for i in range(count):
+	var skyline: Array = []
+	for i in range(34):
 		var angle := rng.randf() * TAU
 		var radius := rng.randf_range(120.0, 900.0)
 		var x := center.x + cos(angle) * radius
@@ -92,9 +105,9 @@ func _build_skyline(builder: MeshBuilder) -> int:
 		var height := rng.randf_range(34.0, 96.0) * clampf(1.0 - radius / 1100.0, 0.35, 1.0)
 		var width := rng.randf_range(18.0, 34.0)
 		var size := Vector3(width, height, width * rng.randf_range(0.8, 1.4))
-		var transform := Transform3D(Basis(Vector3.UP, rng.randf() * TAU), Vector3(x, ground + height * 0.5, z))
-		builder.add_box("city_silhouette", transform, size, Color(0.30, 0.33, 0.40))
-	return count
+		var basis := Basis(Vector3.UP, rng.randf() * TAU).scaled(size)
+		skyline.append(Transform3D(basis, Vector3(x, ground + height * 0.5, z)))
+	return skyline
 
 
 ## A single landmark silhouette (used for the water tower and radio masts that

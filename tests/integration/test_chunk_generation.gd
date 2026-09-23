@@ -126,6 +126,38 @@ func _chunk_triangles(cell: Vector2i, tier: int) -> int:
 	return total
 
 
+## MultiMesh и distance culling: ТЗ требует не рисовать то, что игроку не
+## видно, и использовать MultiMesh для массовых повторяющихся объектов там, где
+## это действительно выгодно (дальний силуэт города - десятки одинаковых коробок
+## одного материала).
+func test_distant_skyline_uses_a_multimesh_and_distance_culling() -> void:
+	var builder := BackgroundBuilder.new(generator.terrain, generator.region_map)
+	var built := builder.build()
+	var transforms: Array = built.get("skyline_transforms", [])
+	var mesh: Mesh = built.get("skyline_mesh") as Mesh
+	assert_gt(float(transforms.size()), 10.0, "высоток дальнего силуэта десятки")
+	assert_ne(mesh, null, "для MultiMesh есть единичный меш высотки")
+	var arrays: Array = (mesh as ArrayMesh).surface_get_arrays(0)
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	assert_eq(vertices.size(), 36, "меш высотки - единичный куб (12 треугольников)")
+	# размеры запечены в трансформациях, а не в геометрии
+	var sizes: Array[float] = []
+	for transform in transforms:
+		var basis: Basis = (transform as Transform3D).basis
+		sizes.append(basis.get_scale().y)
+		assert_gt(basis.get_scale().y, 5.0, "высотка выше пяти метров")
+	assert_gt(sizes.max() - sizes.min(), 5.0, "высотки разной высоты, а не одинаковые коробки")
+	# distance culling слоёв чанка
+	var chunk := WorldChunk.new()
+	chunk.apply_content(Vector2i(0, 0), WorldGenerator.TIER_NEAR, [null, null, null, null], [], 0, 0.0)
+	chunk.set_cull_distances(440.0, 300.0)
+	assert_almost_eq(chunk.cull_distance_of(WorldChunk.Layer.STRUCTURES), 440.0, 0.01,
+		"у слоя построек своя дальность отрисовки")
+	assert_lt(chunk.cull_distance_of(WorldChunk.Layer.FOLIAGE), 440.0,
+		"растительность убирается раньше построек")
+	chunk.free()
+
+
 func test_water_mesh_is_generated_once_for_the_whole_world() -> void:
 	var water := generator.build_water_mesh()
 	assert_ne(water, null, "меш воды создаётся")

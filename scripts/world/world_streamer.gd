@@ -27,6 +27,8 @@ var camera_target: Node3D = null
 var chunks: Dictionary = {}
 var water: MeshInstance3D = null
 var background: MeshInstance3D = null
+## Дальний силуэт города одним MultiMesh (см. _build_skyline_instance).
+var skyline: MultiMeshInstance3D = null
 ## Diagnostics of the far background ring (filled by _ensure_world_wide_meshes).
 var background_triangles: int = 0
 var skyline_buildings: int = 0
@@ -98,6 +100,28 @@ func _ensure_world_wide_meshes() -> void:
 		background.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		background.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
 		add_child(background)
+		_build_skyline_instance(built)
+
+
+## Дальний силуэт города - один MultiMesh на все высотки вместо тридцати
+## четырёх отдельных коробок: одна геометрия в памяти и один вызов отрисовки.
+func _build_skyline_instance(built: Dictionary) -> void:
+	var transforms: Array = built.get("skyline_transforms", [])
+	var mesh: Mesh = built.get("skyline_mesh") as Mesh
+	if transforms.is_empty() or mesh == null:
+		return
+	var multimesh := MultiMesh.new()
+	multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	multimesh.mesh = mesh
+	multimesh.instance_count = transforms.size()
+	for index in range(transforms.size()):
+		multimesh.set_instance_transform(index, transforms[index])
+	skyline = MultiMeshInstance3D.new()
+	skyline.name = "DistantSkyline"
+	skyline.multimesh = multimesh
+	skyline.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	skyline.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+	add_child(skyline)
 
 
 ## ------------------------------------------------------------- streaming ---
@@ -224,6 +248,9 @@ func _build_chunk(cell: Vector2i, tier: int) -> void:
 	chunk.apply_content(
 		cell, tier, data["meshes"], data["colliders"], int(data["buildings"]), float(data["generation_ms"])
 	)
+	# Distance culling: слой построек виден чуть дальше радиуса стриминга (чтобы
+	# не мигал на границе), растительность убирается заметно раньше.
+	chunk.set_cull_distances(view_radius + config.chunk_size_m, view_radius * 0.75)
 	chunk_ready.emit(cell, tier)
 
 

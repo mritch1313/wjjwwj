@@ -147,6 +147,29 @@ func _apply_tier_flags() -> void:
 		)
 
 
+## Distance culling на стороне движка: слой перестаёт рисоваться за своей
+## дальностью (visibility_range_*), ещё до того, как стример успел выгрузить
+## чанк.  Растительность убирается раньше остальных слоёв: она мелкая и
+## заполняет экран, а её вклад в силуэт города нулевой.
+func set_cull_distances(structure_end_m: float, foliage_end_m: float) -> void:
+	if _layers.is_empty():
+		return
+	for index in range(_layers.size()):
+		var instance := _layers[index]
+		var end := foliage_end_m if index == Layer.FOLIAGE else structure_end_m
+		instance.visibility_range_end = end
+		# мягкое затухание, чтобы удалённый слой не исчезал рывком
+		instance.visibility_range_end_margin = maxf(end * 0.08, 4.0)
+		instance.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+
+
+## Дальность отрисовки слоя (для теста и для отладки HUD).
+func cull_distance_of(layer: int) -> float:
+	if layer < 0 or layer >= _layers.size():
+		return 0.0
+	return _layers[layer].visibility_range_end
+
+
 func _count_triangles(mesh: Mesh) -> int:
 	if not (mesh is ArrayMesh):
 		return 0
