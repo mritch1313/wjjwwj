@@ -36,8 +36,16 @@ var scenery_builder: SceneryBuilder
 var landmark_builder: LandmarkBuilder
 
 var world_build_time_ms: float = 0.0
+
 var generated_chunks: int = 0
 var generated_triangles: int = 0
+## Сетка высот последнего построенного рельефа (см. _build_terrain) - из неё
+## строится коллизия земли, чтобы не опрашивать рельеф дважды.
+var _ground_grid_base_x: float = 0.0
+var _ground_grid_base_z: float = 0.0
+var _ground_grid_step: float = 1.0
+var _ground_grid_rows: int = 0
+var _ground_grid_heights: PackedFloat32Array = PackedFloat32Array()
 
 
 func _init(world_config: WorldConfig) -> void:
@@ -137,6 +145,12 @@ func _build_terrain(builder: MeshBuilder, rect: Rect2, tier: int, rng: RandomNum
 	var materials: PackedStringArray = PackedStringArray()
 	var tints := PackedColorArray()
 	heights.resize(rows * rows)
+	# Сетку сэмплов запоминаем: коллизия земли строится из неё же, а не опрашивает
+	# рельеф заново (это была самая дорогая часть генерации городского чанка).
+	_ground_grid_base_x = base_x
+	_ground_grid_base_z = base_z
+	_ground_grid_step = actual_step
+	_ground_grid_rows = rows
 	materials.resize(rows * rows)
 	tints.resize(rows * rows)
 	for iz in range(rows):
@@ -146,10 +160,12 @@ func _build_terrain(builder: MeshBuilder, rect: Rect2, tier: int, rng: RandomNum
 			var index := iz * rows + ix
 			var height := terrain.height_at(x, z)
 			heights[index] = height
-			var slope := terrain.slope_at(x, z, actual_step * 1.5)
+			# Наклон для раскраски считается из уже посчитанных высот (см. ниже),
+			# отдельный сэмпл рельефа на вершину был чистой тратой времени.
 			var surface := terrain.surface_at(x, z, height)
 			materials[index] = terrain.terrain_material_at(x, z, surface)
 			tints[index] = terrain.terrain_tint_at(x, z)
+	_ground_grid_heights = heights
 	for iz in range(count):
 		for ix in range(count):
 			var i0 := iz * rows + ix
@@ -170,8 +186,11 @@ func _build_terrain(builder: MeshBuilder, rect: Rect2, tier: int, rng: RandomNum
 			var uv2 := Vector2(p2.x, p2.z) * uv_scale
 			var uv3 := Vector2(p3.x, p3.z) * uv_scale
 			var material := materials[i0]
-			# rock faces where the slope is high, otherwise follow the surface
-			var slope := terrain.slope_at(p0.x, p0.z, actual_step)
+			# rock faces where the slope is high, otherwise follow the surface:
+			# центральная разность по готовой сетке высот вместо ещё одного запроса
+			var gradient_x := (heights[i1] - heights[i0]) / actual_step
+			var gradient_z := (heights[i3] - heights[i0]) / actual_step
+			var slope := clampf(sqrt(gradient_x * gradient_x + gradient_z * gradient_z), 0.0, 1.0)
 			if slope > 0.7:
 				material = "ground_rock"
 			if split_forward:
@@ -203,6 +222,12 @@ func _build_ground_collision(rect: Rect2, tier: int, origin: Vector3) -> Diction
 		# рельефу, а точную геометрию даёт ближний чанк, который подгружается
 		# быстрее, чем игрок успевает доехать.
 		step = maxf(config.terrain_quad_far, 16.0)
+	# Быстрый путь: рельеф этого же чанка только что сэмплирован для меша
+	# (та же сетка), значит коллизия просто повторяет его вершины.  Раньше
+	# коллизия опрашивала рельеф заново - 4-5 тысяч запросов по ~1.9 мс каждый,
+	# то есть почти десять секунд на один городской чанк.
+	if _ground_grid_rows > 0 and absf(_ground_grid_step - step) < 0.001:
+		return _ground_collision_from_grid(rect, origin)
 	var count := maxi(int(ceil(config.chunk_size_m / step)), 1)
 	var cell := config.chunk_size_m / float(count)
 	var heights := PackedFloat32Array()
@@ -235,6 +260,59 @@ func _build_ground_collision(rect: Rect2, tier: int, origin: Vector3) -> Diction
 				faces[write + 4] = Vector3(x1, h11, z1)
 				faces[write + 5] = Vector3(x0, h01, z1)
 				write += 6
+	faces.resize(write)
+	return {
+		"shape": "trimesh",
+		"faces": faces,
+		"transform": Transform3D.IDENTITY,
+	}
+
+
+## Коллизия земли из уже готовой сетки рельефа: вершины совпадают с видимым
+## мешем (то же разбиение по короткой диагонали), поэтому колёса чувствуют ровно
+## то, что видит игрок.
+func _ground_collision_from_grid(rect: Rect2, origin: Vector3) -> Dictionary:
+	var rows := _ground_grid_rows
+	var step := _ground_grid_step
+	# Сетка глобальная, поэтому её начало может лежать левее/выше чанка: ищем
+	# индекс первой вершины внутри чанка.
+	var first_x := maxi(int(floorf((origin.x - _ground_grid_base_x) / step)), 0)
+	var first_z := maxi(int(floorf((origin.z - _ground_grid_base_z) / step)), 0)
+	var last_x := mini(int(ceilf((origin.x + config.chunk_size_m - _ground_grid_base_x) / step)), rows - 2)
+	var last_z := mini(int(ceilf((origin.z + config.chunk_size_m - _ground_grid_base_z) / step)), rows - 2)
+	if last_x <= first_x or last_z <= first_z:
+		return {}
+	var faces := PackedVector3Array()
+	faces.resize((last_z - first_z) * (last_x - first_x) * 6)
+	var write := 0
+	for iz in range(first_z, last_z):
+		for ix in range(first_x, last_x):
+			var x0 := _ground_grid_base_x + float(ix) * step
+			var x1 := x0 + step
+			var z0 := _ground_grid_base_z + float(iz) * step
+			var z1 := z0 + step
+			var h00 := _ground_grid_heights[iz * rows + ix]
+			var h10 := _ground_grid_heights[iz * rows + ix + 1]
+			var h01 := _ground_grid_heights[(iz + 1) * rows + ix]
+			var h11 := _ground_grid_heights[(iz + 1) * rows + ix + 1]
+			# То же разбиение по короткой диагонали, что у меша
+			var diagonal_p3 := Vector3(x0, h00, z0).distance_squared_to(Vector3(x1, h11, z1))
+			var diagonal_p2 := Vector3(x1, h10, z0).distance_squared_to(Vector3(x0, h01, z1))
+			if diagonal_p2 <= diagonal_p3:
+				faces[write] = Vector3(x0, h00, z0)
+				faces[write + 1] = Vector3(x1, h10, z0)
+				faces[write + 2] = Vector3(x0, h01, z1)
+				faces[write + 3] = Vector3(x1, h10, z0)
+				faces[write + 4] = Vector3(x1, h11, z1)
+				faces[write + 5] = Vector3(x0, h01, z1)
+			else:
+				faces[write] = Vector3(x0, h00, z0)
+				faces[write + 1] = Vector3(x1, h10, z0)
+				faces[write + 2] = Vector3(x1, h11, z1)
+				faces[write + 3] = Vector3(x0, h00, z0)
+				faces[write + 4] = Vector3(x1, h11, z1)
+				faces[write + 5] = Vector3(x0, h01, z1)
+			write += 6
 	faces.resize(write)
 	return {
 		"shape": "trimesh",

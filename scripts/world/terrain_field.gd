@@ -15,6 +15,9 @@ extends RefCounted
 ##     generated independently and still match.
 
 const GRID_STEP := 32.0
+## Радиус поиска дороги, достаточный для выравнивания рельефа и типа покрытия
+## (максимум half_width + shoulder = 22 м на шоссе).
+const ROAD_QUERY_RADIUS_M := 24.0
 const GRID_MARGIN := 64.0
 
 var config: WorldConfig
@@ -22,6 +25,11 @@ var region_map: RegionMap
 
 var grid_build_time_ms: float = 0.0
 var _grid: PackedFloat32Array = PackedFloat32Array()
+## Кэш последнего поиска дороги (см. _nearest_road_cached).
+var _road_cache_x: float = NAN
+var _road_cache_z: float = NAN
+var _road_cache_radius: float = 0.0
+var _road_cache: Dictionary = {}
 var _urban_mask: PackedFloat32Array = PackedFloat32Array()
 var _desert_mask: PackedFloat32Array = PackedFloat32Array()
 var _forest_mask: PackedFloat32Array = PackedFloat32Array()
@@ -196,12 +204,35 @@ func base_height_at(position: Vector3) -> float:
 
 
 ## Final height: base terrain flattened towards the road surface.
+
+## Ближайшая дорога с кэшем на одну точку.  Генерация чанка спрашивает высоту и
+## тип покрытия для одного и того же (x, z) подряд, а сам поиск - самая дорогая
+## операция в сэмплировании рельефа: без кэша он выполнялся на каждый сэмпл
+## дважды.
+func _nearest_road_cached(x: float, z: float, position: Vector3, radius: float) -> Dictionary:
+	if _road_cache_x == x and _road_cache_z == z and radius <= _road_cache_radius:
+		if _road_cache.is_empty():
+			return _road_cache
+		if float(_road_cache["distance"]) <= radius:
+			return _road_cache
+		return {}
+	var road := _road_network.nearest_road(position, radius)
+	_road_cache_x = x
+	_road_cache_z = z
+	_road_cache_radius = radius
+	_road_cache = road
+	return road
+
+
 func height_at(x: float, z: float) -> float:
 	var height := base_height(x, z)
 	if _road_network == null:
 		return height
 	var position := Vector3(x, height, z)
-	var road := _road_network.nearest_road(position, 42.0)
+	# 24 м: выравнивание рельефа действует в пределах half_width + shoulder, а
+	# самый широкий случай (шоссе) даёт 8 + 14 = 22 м.  Этот вызов идёт на каждый
+	# сэмпл высоты, поэтому кэшируется и ищется по узким ячейкам индекса.
+	var road := _nearest_road_cached(x, z, position, ROAD_QUERY_RADIUS_M)
 	if road.is_empty():
 		return height
 	var segment: RoadNetwork.Segment = _road_network.segments[int(road["segment"])]
@@ -263,7 +294,8 @@ func surface_at(x: float, z: float, height: float = INF) -> int:
 	var h := height_at(x, z) if is_inf(height) else height
 	if _road_network != null:
 		var position := Vector3(x, h, z)
-		var road := _road_network.nearest_road(position, 36.0)
+		# см. комментарий в height_at: шире ROAD_QUERY_RADIUS_M дорога уже не влияет
+		var road := _nearest_road_cached(x, z, position, ROAD_QUERY_RADIUS_M)
 		if not road.is_empty():
 			var distance: float = road["distance"]
 			var segment: RoadNetwork.Segment = _road_network.segments[int(road["segment"])]

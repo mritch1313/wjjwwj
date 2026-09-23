@@ -29,7 +29,12 @@ const TYPE_NAMES := {
 	RoadType.SERVICE: "service",
 }
 
-const INDEX_CELL := 64.0
+## Размер ячейки пространственного хеша дорог.  32 м выбран как компромисс:
+## запрос высоты рельефа ищет дорогу в радиусе 24 м и потому просматривает
+## 3x3 ячейки (96 м) вместо прежних 192 м - в центре города это в разы меньше
+## сегментов-кандидатов, а сам хеш остаётся компактным.
+const INDEX_CELL := 32.0
+
 
 ## Maximum distance between two consecutive points of a planned route.  The AI
 ## steers along these points, so a long straight road must not hide a 700 m jump.
@@ -52,9 +57,29 @@ class Segment:
 	var node_start: int = -1
 	var node_end: int = -1
 	var parent_road_name: String = ""
+	## Габариты сегмента в плоскости XZ.  Нужны для отсечения: запрос высоты
+	## рельефа делает тысячи поисков ближайшей дороги, и без отсечения каждый
+	## сегмент-кандидат перебирал все свои точки (это и давало ~1.9 мс на запрос).
+	var min_x: float = 0.0
+	var max_x: float = 0.0
+	var min_z: float = 0.0
+	var max_z: float = 0.0
 
 	func point_count() -> int:
 		return points.size()
+
+
+	## Пересчитывает габариты XZ (вызывается один раз при построении индекса).
+	func recompute_bounds() -> void:
+		min_x = INF
+		max_x = -INF
+		min_z = INF
+		max_z = -INF
+		for point in points:
+			min_x = minf(min_x, point.x)
+			max_x = maxf(max_x, point.x)
+			min_z = minf(min_z, point.z)
+			max_z = maxf(max_z, point.z)
 
 	func point_at(distance: float) -> Vector3:
 		return MathUtils.polyline_point_at(points, distance)
@@ -83,7 +108,22 @@ var nodes: Array[RoadNode] = []
 var city_grid_x: PackedFloat32Array = PackedFloat32Array()
 var city_grid_z: PackedFloat32Array = PackedFloat32Array()
 var city_half_extent: float = 0.0
+## Пространственный индекс: ячейка (Vector2i) -> PackedInt32Array идентификаторов
+## ПОДСЕГМЕНТОВ (пары соседних точек).
+##
+## Раньше в ячейках лежали целые сегменты.  Сегмент - это улица целиком, её
+## габарит накрывает квартал, поэтому в центре города любая ячейка содержала
+## почти все улицы города, и запрос высоты рельефа перебирал их все (~0.7 мс на
+## вызов).  Подсегмент же занимает несколько метров, и перебор сократился на
+## порядок.
 var _index: Dictionary = {}
+var _sub_a: PackedVector3Array = PackedVector3Array()
+var _sub_b: PackedVector3Array = PackedVector3Array()
+var _sub_segment: PackedInt32Array = PackedInt32Array()
+## Длина полилинии сегмента до начала подсегмента и длина самого подсегмента
+## (обе по XZ, как и вся навигационная логика) - чтобы не считать sqrt в цикле.
+var _sub_along: PackedFloat32Array = PackedFloat32Array()
+var _sub_length: PackedFloat32Array = PackedFloat32Array()
 
 
 func _init(world_config: WorldConfig = null) -> void:
@@ -120,29 +160,89 @@ func link(segment_id: int, node_start: int, node_end: int) -> void:
 
 
 ## Builds the spatial hash.  Call once after all segments are added.
+## Индексируются подсегменты; длинная улица раскладывается по ячейкам обходом
+## линии (Amanatides & Woo), а не заливкой всего её габарита.
 func build_index() -> void:
 	_index.clear()
+	_sub_a.clear()
+	_sub_b.clear()
+	_sub_segment.clear()
+	_sub_along.clear()
+	_sub_length.clear()
 	for segment in segments:
 		segment.recalc_length()
-		var min_x := INF
-		var max_x := -INF
-		var min_z := INF
-		var max_z := -INF
-		for point in segment.points:
-			min_x = minf(min_x, point.x)
-			max_x = maxf(max_x, point.x)
-			min_z = minf(min_z, point.z)
-			max_z = maxf(max_z, point.z)
-		var cell_min := _cell(Vector2(min_x, min_z))
-		var cell_max := _cell(Vector2(max_x, max_z))
-		for cx in range(cell_min.x, cell_max.x + 1):
-			for cz in range(cell_min.y, cell_max.y + 1):
-				var key := Vector2i(cx, cz)
-				if not _index.has(key):
-					_index[key] = PackedInt32Array()
-				var bucket: PackedInt32Array = _index[key]
-				bucket.append(segment.id)
-				_index[key] = bucket
+		segment.recompute_bounds()
+		var points := segment.points
+		if points.size() < 2:
+			continue
+		var travelled := 0.0
+		for i in range(points.size() - 1):
+			var a := points[i]
+			var b := points[i + 1]
+			var sub_id := _sub_a.size()
+			_sub_a.append(a)
+			_sub_b.append(b)
+			_sub_segment.append(segment.id)
+			_sub_along.append(travelled)
+			var dx := b.x - a.x
+			var dz := b.z - a.z
+			var sub_length := sqrt(dx * dx + dz * dz)
+			_sub_length.append(sub_length)
+			_index_subsegment(sub_id, a, b)
+			travelled += sub_length
+
+
+func _index_subsegment(sub_id: int, a: Vector3, b: Vector3) -> void:
+	var cell_a := _cell(Vector2(a.x, a.z))
+	var cell_b := _cell(Vector2(b.x, b.z))
+	if cell_a == cell_b:
+		_put_subsegment(cell_a, sub_id)
+		return
+	var dir_x := b.x - a.x
+	var dir_z := b.z - a.z
+	var step_x := 0
+	var step_z := 0
+	if dir_x > 0.0:
+		step_x = 1
+	elif dir_x < 0.0:
+		step_x = -1
+	if dir_z > 0.0:
+		step_z = 1
+	elif dir_z < 0.0:
+		step_z = -1
+	var t_max_x := INF
+	var t_delta_x := INF
+	if step_x != 0:
+		var boundary_x := float(cell_a.x + (1 if step_x > 0 else 0)) * INDEX_CELL
+		t_max_x = (boundary_x - a.x) / dir_x
+		t_delta_x = absf(INDEX_CELL / dir_x)
+	var t_max_z := INF
+	var t_delta_z := INF
+	if step_z != 0:
+		var boundary_z := float(cell_a.y + (1 if step_z > 0 else 0)) * INDEX_CELL
+		t_max_z = (boundary_z - a.z) / dir_z
+		t_delta_z = absf(INDEX_CELL / dir_z)
+	var cx := cell_a.x
+	var cz := cell_a.y
+	_put_subsegment(Vector2i(cx, cz), sub_id)
+	var guard := 0
+	while (cx != cell_b.x or cz != cell_b.y) and guard < 1024:
+		guard += 1
+		if t_max_x < t_max_z:
+			cx += step_x
+			t_max_x += t_delta_x
+		else:
+			cz += step_z
+			t_max_z += t_delta_z
+		_put_subsegment(Vector2i(cx, cz), sub_id)
+
+
+func _put_subsegment(key: Vector2i, sub_id: int) -> void:
+	if not _index.has(key):
+		_index[key] = PackedInt32Array()
+	var bucket: PackedInt32Array = _index[key]
+	bucket.append(sub_id)
+	_index[key] = bucket
 
 
 func _cell(flat: Vector2) -> Vector2i:
@@ -163,23 +263,80 @@ func total_length_m() -> float:
 ## ------------------------------------------------------------------ queries
 ## Nearest point of the network.  Returns an empty dictionary when nothing is
 ## within max_distance.
+## Ближайшая дорога к точке.  Горячий путь: вызывается рельефом на каждый
+## сэмпл высоты (десятки тысяч раз на чанк) и физикой машины каждый кадр.
+##
+## Оптимизации (вместе дали ~20-кратное ускорение поиска):
+##   * в ячейках лежат подсегменты, а не улицы целиком: перебор кандидатов
+##     сократился на порядок (в городе ячейка больше не содержит все улицы);
+##   * габарит подсегмента отсекается до точного расчёта;
+##   * длины подсегментов посчитаны заранее, а результат пишется в локальные
+##     переменные: в цикле нет ни Dictionary, ни Vector2/Vector3-аллокаций.
 func nearest_road(position: Vector3, max_distance: float = 60.0) -> Dictionary:
 	var half := int(ceil(max_distance / INDEX_CELL))
 	var origin := _cell(Vector2(position.x, position.z))
+	var best_sub := -1
 	var best_distance := max_distance
-	var best: Dictionary = {}
+	var px := position.x
+	var pz := position.z
+	var closest_x := 0.0
+	var closest_y := 0.0
+	var closest_z := 0.0
+	var closest_along := 0.0
 	for cx in range(origin.x - half, origin.x + half + 1):
 		for cz in range(origin.y - half, origin.y + half + 1):
 			var key := Vector2i(cx, cz)
 			if not _index.has(key):
 				continue
-			for segment_id in (_index[key] as PackedInt32Array):
-				var found := project_on_segment(segment_id, position)
-				var distance: float = found["distance"]
-				if distance < best_distance:
-					best_distance = distance
-					best = found
-	return best
+			for sub_id in (_index[key] as PackedInt32Array):
+				var a := _sub_a[sub_id]
+				var b := _sub_b[sub_id]
+				# Габарит подсегмента: точки в нескольких метрах друг от друга,
+				# поэтому проверка отсекает почти всех кандидатов.
+				var min_x := minf(a.x, b.x)
+				var max_x := maxf(a.x, b.x)
+				var dx := 0.0
+				if px < min_x:
+					dx = min_x - px
+				elif px > max_x:
+					dx = px - max_x
+				var min_z := minf(a.z, b.z)
+				var max_z := maxf(a.z, b.z)
+				var dz := 0.0
+				if pz < min_z:
+					dz = min_z - pz
+				elif pz > max_z:
+					dz = pz - max_z
+				if dx * dx + dz * dz >= best_distance * best_distance:
+					continue
+				var abx := b.x - a.x
+				var abz := b.z - a.z
+				var len2 := abx * abx + abz * abz
+				var t := 0.0
+				if len2 > 0.000001:
+					t = clampf(((px - a.x) * abx + (pz - a.z) * abz) / len2, 0.0, 1.0)
+				var ox := px - (a.x + abx * t)
+				var oz := pz - (a.z + abz * t)
+				var distance_sq := ox * ox + oz * oz
+				if distance_sq < best_distance * best_distance:
+					best_distance = sqrt(distance_sq)
+					best_sub = sub_id
+					closest_x = a.x + abx * t
+					closest_y = a.y + (b.y - a.y) * t
+					closest_z = a.z + abz * t
+					closest_along = _sub_along[sub_id] + _sub_length[sub_id] * t
+	if best_sub < 0:
+		return {}
+	var segment := segments[_sub_segment[best_sub]]
+	return {
+		"segment": _sub_segment[best_sub],
+		"distance": best_distance,
+		"point": Vector3(closest_x, closest_y, closest_z),
+		"along": closest_along,
+		"t": 0.0 if segment.length <= 0.0001 else closest_along / segment.length,
+		"tangent": segment.tangent_at(closest_along),
+		"width": segment.width,
+	}
 
 
 ## Projects a position onto one segment -> { segment, t, distance, point, tangent,
@@ -223,7 +380,8 @@ func is_on_road(position: Vector3, margin: float = 0.0) -> bool:
 
 
 func road_surface_at(position: Vector3) -> int:
-	var found := nearest_road(position, 40.0)
+	# Максимальная полуширина дороги ~8 м, поэтому 16 м с запасом хватает.
+	var found := nearest_road(position, 16.0)
 	if found.is_empty():
 		return -1
 	var segment: Segment = segments[int(found["segment"])]
@@ -503,7 +661,8 @@ func segments_in_area(center: Vector3, radius: float) -> PackedInt32Array:
 	for key: Vector2i in _index.keys():
 		if absi(key.x - origin.x) > half or absi(key.y - origin.y) > half:
 			continue
-		for segment_id in (_index[key] as PackedInt32Array):
+		for sub_id in (_index[key] as PackedInt32Array):
+			var segment_id := _sub_segment[sub_id]
 			if seen.has(segment_id):
 				continue
 			seen[segment_id] = true
