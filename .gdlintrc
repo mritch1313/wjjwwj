@@ -1,0 +1,33 @@
+# gdtoolkit lint configuration for "Chase: Open World".
+# The enabled rules catch real defects (unused variables, shadowing, unreachable
+# code, ...).  Cosmetic ordering / wrapping rules are relaxed so that the lint
+# step in CI reports problems instead of formatting preferences.
+class-definitions-order:
+  - tools
+  - classnames
+  - extends
+  - docstrings
+  - signals
+  - enums
+  - consts
+  - staticvars
+  - exports
+  - pubvars
+  - prvvars
+  - onreadypubvars
+  - onreadyprvvars
+  - others
+max-line-length: 200
+max-returns: 14
+function-arguments-number: 14
+max-public-methods: 64
+max-file-lines: 1600
+max-branches: 40
+max-local-variables: 22
+duplicated-load: null
+trailing-whitespace: null
+# The prop/vegetation builders share one signature (builder, transform, rng) so
+# that a uniform dispatch table can call them; some of them do not need the rng.
+disable:
+  - unused-argument
+  - expression-not-assigned
