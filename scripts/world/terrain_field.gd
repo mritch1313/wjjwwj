@@ -25,11 +25,11 @@ var region_map: RegionMap
 
 var grid_build_time_ms: float = 0.0
 var _grid: PackedFloat32Array = PackedFloat32Array()
-## Кэш последнего поиска дороги (см. _nearest_road_cached).
-var _road_cache_x: float = NAN
-var _road_cache_z: float = NAN
-var _road_cache_radius: float = 0.0
-var _road_cache: Dictionary = {}
+## Кэш последнего поиска дороги (см. _nearest_road_cached).  Лежит в одном
+## словаре и читается одной ссылкой: генерация чанков идёт в фоновом потоке, а
+## физика в главном, и разрозненные поля могли бы дать "сшитое" значение из
+## разных записей.
+var _road_cache_entry: Dictionary = {}
 var _urban_mask: PackedFloat32Array = PackedFloat32Array()
 var _desert_mask: PackedFloat32Array = PackedFloat32Array()
 var _forest_mask: PackedFloat32Array = PackedFloat32Array()
@@ -210,17 +210,18 @@ func base_height_at(position: Vector3) -> float:
 ## операция в сэмплировании рельефа: без кэша он выполнялся на каждый сэмпл
 ## дважды.
 func _nearest_road_cached(x: float, z: float, position: Vector3, radius: float) -> Dictionary:
-	if _road_cache_x == x and _road_cache_z == z and radius <= _road_cache_radius:
-		if _road_cache.is_empty():
-			return _road_cache
-		if float(_road_cache["distance"]) <= radius:
-			return _road_cache
-		return {}
+	var entry := _road_cache_entry
+	if not entry.is_empty():
+		if float(entry.get("x", INF)) == x and float(entry.get("z", INF)) == z \
+				and radius <= float(entry.get("radius", 0.0)):
+			var cached: Dictionary = entry.get("road", {})
+			if cached.is_empty():
+				return cached
+			if float(cached.get("distance", 0.0)) <= radius:
+				return cached
+			return {}
 	var road := _road_network.nearest_road(position, radius)
-	_road_cache_x = x
-	_road_cache_z = z
-	_road_cache_radius = radius
-	_road_cache = road
+	_road_cache_entry = {"x": x, "z": z, "radius": radius, "road": road}
 	return road
 
 

@@ -122,3 +122,38 @@ func test_slope_is_zero_on_flat_ground_and_positive_on_hills() -> void:
 	for i in range(300):
 		max_slope = maxf(max_slope, terrain.slope_at(rng.randf_range(-1900.0, 1900.0), rng.randf_range(-1900.0, 1900.0), 6.0))
 	assert_gt(max_slope, 0.05, "в мире есть уклоны")
+
+
+## Генерация чанка идёт в фоновом потоке, поэтому она обязана возвращать только
+## данные (без ArrayMesh и без материалов - обращение к Assets из потока
+## недопустимо).  Тест проверяет и сам обмен: меш, собранный из данных, совпадает
+## с прямым commit().
+func test_chunk_generation_is_resource_free_and_mesh_data_round_trips() -> void:
+	var builder := MeshBuilder.new()
+	builder.add_quad("asphalt", Vector3.ZERO, Vector3(1, 0, 0), Vector3(1, 0, 1), Vector3(0, 0, 1))
+	builder.add_box("brick", Transform3D(Basis(), Vector3(0, 0, 0)), Vector3(2, 2, 2))
+	var data := builder.commit_data()
+	assert_eq(data.size(), 2, "две группы материалов")
+	assert_true(data.has("asphalt") and data.has("brick"), "имена материалов сохранены")
+	var mesh := MeshBuilder.mesh_from_data(data)
+	assert_true(mesh != null, "меш собирается из данных")
+	assert_eq(mesh.get_surface_count(), 2, "по поверхности на материал")
+	var vertices := 0
+	for surface in range(mesh.get_surface_count()):
+		var arrays := mesh.surface_get_arrays(surface)
+		vertices += (arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+	assert_eq(vertices, 42, "6 вершин квада + 36 вершин коробки")
+
+	var generator: WorldGenerator = WorldFixture.generator()
+	var chunk_data := generator.generate_chunk_data(Vector2i(3, 3), WorldGenerator.TIER_FAR)
+	assert_true(not chunk_data.has("meshes"), "данные чанка не содержат готовых мешей")
+	assert_eq((chunk_data["mesh_data"] as Array).size(), 4, "четыре слоя геометрии")
+	assert_gt(float((chunk_data["colliders"] as Array).size()), 0.0, "коллайдеры описаны данными")
+	assert_gt(float(chunk_data["generation_ms"]), 0.0, "время генерации измеряется")
+	# меши собираются из этих данных без ошибок и непустые
+	var far_meshes := 0
+	for mesh_data in (chunk_data["mesh_data"] as Array):
+		var built := MeshBuilder.mesh_from_data(mesh_data as Dictionary)
+		if built != null and built.get_surface_count() > 0:
+			far_meshes += 1
+	assert_gt(float(far_meshes), 0.0, "хотя бы один слой дальнего чанка содержит геометрию")

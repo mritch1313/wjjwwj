@@ -44,11 +44,13 @@ var mid_radius: float = 384.0
 var view_radius: float = 448.0
 
 var _pending: Array[Dictionary] = []
+## Генерация идёт в главном потоке, поэтому за один тик стримера строится не
+## больше `_max_generations` чанков и не дольше бюджета времени из пресета.
+var _generation_budget_ms: float = 6.0
+var _max_generations: int = 1
 var _last_center: Vector3 = Vector3(1e9, 0.0, 1e9)
 var _last_update: float = 0.0
 var _last_player_cell: Vector2i = Vector2i(-9999, -9999)
-var _generation_budget_ms: float = 6.0
-var _max_generations: int = 2
 var _warmup_done: bool = false
 var _stream_complete_sent: bool = false
 var _chunks_freed_total: int = 0
@@ -79,9 +81,11 @@ func _apply_radii() -> void:
 	near_radius = maxf(view_radius * TIER_DISTANCE_FACTOR_NEAR, near_floor)
 	mid_radius = maxf(view_radius * TIER_DISTANCE_FACTOR_MID, config.chunk_size_m * 1.6)
 	_generation_budget_ms = quality.generation_budget_ms
-	# Генерация чанка - самая дорогая операция в игре. На слабом пресете строим
-	# строго по одному чанку за кадр: два-три подряд дают рывки в сотни
-	# миллисекунд, из-за которых кадр не успевает отрисоваться вовсе.
+	# Генерация чанка идёт в главном потоке: второй поток использовать нельзя -
+	# те же объекты (рельеф, дороги, RNG) вызывает физика игрока каждый кадр, а
+	# одновременный вызов одних GDScript-объектов из двух потоков роняет движок
+	# (проверено: смоук-тест падал в signal 11).  Поэтому работа стримера
+	# ограничена одним чанком за тик.
 	_max_generations = 1 if quality.view_distance_m <= 360.0 else quality.max_generations_per_frame
 
 
@@ -252,28 +256,32 @@ func _process_queue() -> void:
 	var started := Time.get_ticks_msec()
 	var generated := 0
 	while not _pending.is_empty() and generated < _max_generations:
-		if Time.get_ticks_msec() - started > _generation_budget_ms:
+		if generated > 0 and Time.get_ticks_msec() - started > _generation_budget_ms:
 			break
 		var entry: Dictionary = _pending.pop_front()
 		_build_chunk(entry["cell"], int(entry["tier"]))
 		generated += 1
 
 
-func _build_chunk(cell: Vector2i, tier: int) -> void:
-	var data := generator.generate_chunk(cell, tier)
+## Создаёт меши из данных чанка (главный поток) и наполняет узел чанка.
+func _apply_chunk_data(cell: Vector2i, tier: int, data: Dictionary) -> void:
+	var meshes: Array = []
+	for mesh_data in (data["mesh_data"] as Array):
+		meshes.append(MeshBuilder.mesh_from_data(mesh_data as Dictionary))
 	var chunk: WorldChunk = chunks.get(cell, null)
 	if chunk == null:
 		chunk = WorldChunk.new()
 		chunks[cell] = chunk
 		add_child(chunk)
 		chunks_generated_total += 1
+		generator.generated_chunks += 1
 	# The builders emit world-space geometry (a shared global vertex grid is what
 	# keeps chunk seams from cracking), so the chunk node itself stays at the scene
 	# origin: moving it by the chunk origin would offset the geometry twice and the
 	# wheels would find no ground under the car.
 	chunk.position = Vector3.ZERO
 	chunk.apply_content(
-		cell, tier, data["meshes"], data["colliders"], int(data["buildings"]), float(data["generation_ms"])
+		cell, tier, meshes, data["colliders"], int(data["buildings"]), float(data["generation_ms"])
 	)
 	# Distance culling: слой построек виден чуть дальше радиуса стриминга (чтобы
 	# не мигал на границе), растительность убирается заметно раньше.
@@ -281,8 +289,15 @@ func _build_chunk(cell: Vector2i, tier: int) -> void:
 	chunk_ready.emit(cell, tier)
 
 
+## Синхронная генерация чанка: нужна заставке (там кадры не важны) и тестам.
+func _build_chunk(cell: Vector2i, tier: int) -> void:
+	_apply_chunk_data(cell, tier, generator.generate_chunk_data(cell, tier))
+
+
 ## Generates everything that is needed around a position before the player sees
-## the world (called once by the loading screen).
+## the world (called once by the loading screen).  Заставка строит мир порциями
+## (несколько чанков за вызов), потому что она всё равно не показывает игровой
+## процесс.
 func warmup(center: Vector3, max_chunks: int = 12) -> int:
 	_last_center = center
 	var cell := config.cell_of_position(center)

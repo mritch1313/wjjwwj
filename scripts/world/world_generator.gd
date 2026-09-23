@@ -85,7 +85,22 @@ func terrain_quad_step(tier: int) -> float:
 
 
 ## ------------------------------------------------------------- chunk build --
+## Полная сборка чанка: данные + меши-ресурсы.  Удобно для тестов и заставки.
+## Игровой стриминг использует generate_chunk_data() в фоновом потоке, а меши
+## собирает в главном (см. WorldStreamer).
 func generate_chunk(cell: Vector2i, tier: int) -> Dictionary:
+	var data := generate_chunk_data(cell, tier)
+	var meshes: Array = []
+	for mesh_data in (data["mesh_data"] as Array):
+		meshes.append(MeshBuilder.mesh_from_data(mesh_data as Dictionary))
+	data["meshes"] = meshes
+	return data
+
+
+## Содержимое чанка без единого обращения к ресурсам/материалам: только данные
+## геометрии, коллайдеров и статистика.  Именно эту функцию можно безопасно
+## вызывать из WorkerThreadPool.
+func generate_chunk_data(cell: Vector2i, tier: int) -> Dictionary:
 	var started := Time.get_ticks_msec()
 	var origin := config.chunk_origin(cell)
 	var rect := Rect2(Vector2(origin.x, origin.z), Vector2(config.chunk_size_m, config.chunk_size_m))
@@ -112,12 +127,13 @@ func generate_chunk(cell: Vector2i, tier: int) -> Dictionary:
 		if urban < 0.65:
 			scenery_builder.build_chunk(foliage, rect, tier, rng, colliders)
 
-	generated_chunks += 1
-	var meshes: Array = [
-		terrain_builder.commit(),
-		road_builder_local.commit(),
-		structures.commit(),
-		foliage.commit(),
+	# Счётчик чанков увеличивает стример в главном потоке (см. WorldStreamer):
+	# из фоновых потоков инкремент поля - гонка.
+	var mesh_data: Array = [
+		terrain_builder.commit_data(),
+		road_builder_local.commit_data(),
+		structures.commit_data(),
+		foliage.commit_data(),
 	]
 	var shapes: Array = []
 	if ground_collision != null:
@@ -125,7 +141,7 @@ func generate_chunk(cell: Vector2i, tier: int) -> Dictionary:
 	shapes.append_array(colliders)
 	var elapsed := float(Time.get_ticks_msec() - started)
 	return {
-		"meshes": meshes,
+		"mesh_data": mesh_data,
 		"colliders": shapes,
 		"buildings": buildings,
 		"generation_ms": elapsed,

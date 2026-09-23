@@ -142,12 +142,15 @@ func _apply_tier_flags() -> void:
 		return
 	if tier == TIER_FAR:
 		_layers[Layer.FOLIAGE].visible = false
+	# Тени бросают только ближние чанки.  Карта теней на телефоне 512-1024 px,
+	# она физически не покрывает сотни метров: тень от дома в 250 м всё равно не
+	# видна, а её отрисовка стоит прохода по всей геометрии среднего кольца.
 	for index in range(_layers.size()):
 		var instance := _layers[index]
 		if instance.mesh == null or index == Layer.FOLIAGE:
 			continue
 		instance.cast_shadow = (
-			GeometryInstance3D.SHADOW_CASTING_SETTING_ON if tier != TIER_FAR
+			GeometryInstance3D.SHADOW_CASTING_SETTING_ON if tier == TIER_NEAR
 			else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		)
 

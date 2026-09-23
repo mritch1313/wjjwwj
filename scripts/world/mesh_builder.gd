@@ -518,22 +518,44 @@ func append_builder(other: MeshBuilder) -> void:
 
 ## Finalises all material groups into one ArrayMesh with one surface each.
 func commit() -> ArrayMesh:
-	if _groups.is_empty():
-		return null
-	var mesh := ArrayMesh.new()
+	return mesh_from_data(commit_data())
+
+
+## Данные всех групп без создания ресурса: Packed-массивы по материалам.
+## Нужны, чтобы собрать геометрию чанка в фоновом потоке (MeshBuilder и все
+## фабрики работают с обычными данными), а ArrayMesh и материалы - в главном:
+## обращение к RenderingServer и к Assets из потока недопустимо.
+func commit_data() -> Dictionary:
+	var out: Dictionary = {}
 	for material_name in _groups.keys():
 		var group: Array = _groups[material_name]
 		if (group[0] as Array).is_empty():
 			continue
-		# Единственное преобразование в Packed-массивы за всю сборку меша.
+		out[material_name] = [
+			PackedVector3Array(group[0]),
+			PackedVector3Array(group[1]),
+			PackedColorArray(group[2]),
+			PackedVector2Array(group[3]),
+		]
+	_groups.clear()
+	return out
+
+
+## Collects one ArrayMesh (one surface per material) from commit_data() output.
+## Вызывать только в главном потоке: материалы берутся через Assets.
+static func mesh_from_data(data: Dictionary) -> ArrayMesh:
+	if data.is_empty():
+		return null
+	var mesh := ArrayMesh.new()
+	for material_name in data.keys():
+		var group: Array = data[material_name]
 		var arrays: Array = []
 		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array(group[0])
-		arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array(group[1])
-		arrays[Mesh.ARRAY_COLOR] = PackedColorArray(group[2])
-		arrays[Mesh.ARRAY_TEX_UV] = PackedVector2Array(group[3])
+		arrays[Mesh.ARRAY_VERTEX] = group[0]
+		arrays[Mesh.ARRAY_NORMAL] = group[1]
+		arrays[Mesh.ARRAY_COLOR] = group[2]
+		arrays[Mesh.ARRAY_TEX_UV] = group[3]
 		var surface_index := mesh.get_surface_count()
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		mesh.surface_set_material(surface_index, Assets.material(String(material_name)))
-	_groups.clear()
 	return mesh
