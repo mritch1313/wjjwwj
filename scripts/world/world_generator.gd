@@ -89,7 +89,7 @@ func generate_chunk(cell: Vector2i, tier: int) -> Dictionary:
 	var ground_collision := _build_ground_collision(rect, tier, origin)
 
 	var road_builder_local := MeshBuilder.new()
-	road_builder.build_chunk(road_builder_local, rect, rng)
+	road_builder.build_chunk(road_builder_local, rect, rng, tier)
 
 	# Structures (opaque, casts shadows) and foliage (alpha scissor, no shadows)
 	# live in separate mesh instances so their render flags can differ.

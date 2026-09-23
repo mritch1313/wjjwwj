@@ -66,13 +66,17 @@ static func _roof_details(
 		base * _t(Vector3(size.x * rng.randf_range(-0.22, 0.22), stair_size.y * 0.5, size.y * rng.randf_range(-0.22, 0.22))),
 		stair_size, Color(0.9, 0.9, 0.88)
 	)
-	builder.add_box(
-		"roof_metal",
-		base * _t(Vector3(size.x * rng.randf_range(-0.22, 0.22), stair_size.y + 0.08, size.y * rng.randf_range(-0.22, 0.22))),
-		Vector3(stair_size.x + 0.3, 0.16, stair_size.z + 0.3), Color(0.9, 0.9, 0.92)
-	)
+	# Колпак лестничной будки и вентиляторные патрубки - только у крупных
+	# зданий: с земли и с третьего лица эти детали на крыше неразличимы, а
+	# каждая из них стоит десятки треугольников в каждом чанке города.
+	if large:
+		builder.add_box(
+			"roof_metal",
+			base * _t(Vector3(size.x * rng.randf_range(-0.22, 0.22), stair_size.y + 0.08, size.y * rng.randf_range(-0.22, 0.22))),
+			Vector3(stair_size.x + 0.3, 0.16, stair_size.z + 0.3), Color(0.9, 0.9, 0.92)
+		)
 	# AC / ventilation units
-	var units := rng.randi_range(2, 5) if large else rng.randi_range(1, 2)
+	var units := rng.randi_range(2, 5) if large else 1
 	for i in range(units):
 		var unit_size := Vector3(rng.randf_range(0.9, 1.9), rng.randf_range(0.7, 1.3), rng.randf_range(0.9, 1.7))
 		var offset := Vector3(
@@ -81,11 +85,12 @@ static func _roof_details(
 			rng.randf_range(-size.y * 0.3, size.y * 0.3)
 		)
 		builder.add_box("metal_grey", base * _t(offset, rng.randf() * TAU), unit_size, Color(0.88, 0.9, 0.92))
-		builder.add_cylinder(
-			"metal_dark",
-			base * _t(offset + Vector3(0.0, unit_size.y * 0.5 + 0.05, 0.0)),
-			unit_size.x * 0.28, unit_size.x * 0.28, 0.1, 8, Color(0.8, 0.82, 0.84)
-		)
+		if large:
+			builder.add_cylinder(
+				"metal_dark",
+				base * _t(offset + Vector3(0.0, unit_size.y * 0.5 + 0.05, 0.0)),
+				unit_size.x * 0.28, unit_size.x * 0.28, 0.1, 8, Color(0.8, 0.82, 0.84)
+			)
 	# water tank / antenna on taller buildings
 	if height > 22.0 and rng.randf() < 0.6:
 		var tank_height := 2.4
@@ -173,7 +178,7 @@ static func build_tower(
 	remaining = height - (y - plinth_height)
 
 	# vertical mullions on the ground volume
-	var columns := int(maxf(width / 3.6, 2.0))
+	var columns := int(maxf(width / 4.6, 2.0))
 	for i in range(columns + 1):
 		var x := -width * 0.5 + width * float(i) / float(columns)
 		builder.add_box(
@@ -235,8 +240,9 @@ static func build_block(
 		"transform": _t(origin + Vector3(0.0, height * 0.5, 0.0), yaw),
 		"size": Vector3(width, height, depth),
 	})
-	# floor bands
-	for floor in range(1, floors):
+	# floor bands: every third floor is enough for the eye at 720p and cuts the
+	# number of boxes in a district by two thirds
+	for floor in range(1, floors, 3):
 		var y := plinth_height + float(floor) * ((height - plinth_height) / float(floors))
 		builder.add_box(
 			"concrete_wall",
@@ -247,7 +253,7 @@ static func build_block(
 	# balconies on the street side
 	if rng.randf() < 0.75 and floors >= 2:
 		var balcony_count := maxi(int(width / 4.2), 1)
-		for floor in range(1, floors):
+		for floor in range(1, floors, 3):
 			if rng.randf() < 0.25:
 				continue
 			var y := plinth_height + float(floor) * ((height - plinth_height) / float(floors)) - 1.5
@@ -261,7 +267,7 @@ static func build_block(
 				builder.add_foliage_planes("fence_bars", balcony * _t(Vector3(-1.2, 0.2, 0.55), PI * 0.5), Vector2(1.2, 1.0), 1, Color(0.9, 0.9, 0.9))
 				builder.add_foliage_planes("fence_bars", balcony * _t(Vector3(1.2, 0.2, 0.55), PI * 0.5), Vector2(1.2, 1.0), 1, Color(0.9, 0.9, 0.9))
 	_roof_details(builder, origin, yaw, Vector2(width, depth), height, rng, height > 18.0)
-	if floors >= 1:
+	if width >= 9.0:
 		_entrance(builder, _t(origin + Vector3(0.0, 0.0, depth * 0.5 + 0.02), yaw), width, facade, rng.randf() < 0.5)
 	return {
 		"colliders": colliders,
@@ -347,6 +353,38 @@ static func build_shop_row(
 		"style": "shop",
 		"frontage": Vector3(sin(yaw), 0.0, cos(yaw)),
 	}
+
+
+## Упрощённый дом для среднего LOD (tier 1): три коробки вместо полноценной
+## застройки.  Средние чанки видны с 200-400 м, где балконы и крышные детали
+## уже не различимы, а платить за них треугольниками приходится всем чанкам
+## кольца вокруг игрока (раньше средний уровень строил почти полную детализацию
+## и обходился дороже ближнего).
+static func build_simple_block(
+	builder: MeshBuilder,
+	origin: Vector3,
+	yaw: float,
+	width: float,
+	depth: float,
+	height: float,
+	rng: RandomNumberGenerator,
+	style: String = "city"
+) -> void:
+	var facade := pick_facade(style, rng)
+	var plinth_height := 0.8
+	builder.add_box("plinth", _t(origin + Vector3(0.0, plinth_height * 0.5, 0.0), yaw),
+		Vector3(width + 0.4, plinth_height, depth + 0.4), Color(0.9, 0.9, 0.88))
+	builder.add_box(
+		facade,
+		_t(origin + Vector3(0.0, plinth_height + (height - plinth_height) * 0.5, 0.0), yaw),
+		Vector3(width, height - plinth_height, depth),
+		Color(0.9 + rng.randf() * 0.18, 0.92 + rng.randf() * 0.14, 0.92 + rng.randf() * 0.16),
+		FACADE_UV,
+		"roof_flat"
+	)
+	# thin cornice under the roof: без него силуэт снова читается как голая коробка
+	builder.add_box("concrete_wall", _t(origin + Vector3(0.0, height - 0.12, 0.0), yaw),
+		Vector3(width + 0.32, 0.24, depth + 0.32), Color(0.94, 0.94, 0.92))
 
 
 ## -------------------------------------------------------------- warehouse --

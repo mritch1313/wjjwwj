@@ -30,17 +30,25 @@ func _init(world_config: WorldConfig, world_terrain: TerrainField) -> void:
 
 
 ## Builds every road piece that touches the chunk rectangle.
-func build_chunk(builder: MeshBuilder, rect: Rect2, rng: RandomNumberGenerator) -> Array:
+## tier: 0 = полный профиль дороги вблизи, 1 и выше = только полотно
+## (бордюры, тротуары, отбойники, разметка и водостоки с 200-400 м не видны,
+## а стоят десятки тысяч треугольников в каждом городском чанке).
+func build_chunk(builder: MeshBuilder, rect: Rect2, rng: RandomNumberGenerator, tier: int = 0) -> Array:
 	var colliders := []
 	if network == null:
 		return colliders
+	# 0 = ближний уровень (константы уровней живут в WorldGenerator; здесь
+	# сравнение с нулём, чтобы у строителя дорог не было циклической зависимости)
+	var detailed := tier <= 0
 	var center := Vector3(rect.get_center().x, 0.0, rect.get_center().y)
 	var radius := rect.size.length() * 0.5 + 20.0
 	for segment_id in network.segments_in_area(center, radius):
 		var segment := network.segments[segment_id]
 		var runs := _clip_segment(segment, rect)
 		for run in runs:
-			_add_ribbon(builder, segment, run, rng, colliders)
+			_add_ribbon(builder, segment, run, rng, colliders, detailed)
+	if not detailed:
+		return colliders
 	for node in network.nodes:
 		if not node.is_junction:
 			continue
@@ -83,7 +91,8 @@ func _add_ribbon(
 	segment: RoadNetwork.Segment,
 	points: Array,
 	rng: RandomNumberGenerator,
-	colliders: Array
+	colliders: Array,
+	detailed: bool = true
 ) -> void:
 	var half_width := segment.width * 0.5
 	var deck_lift := 0.03
@@ -131,6 +140,8 @@ func _add_ribbon(
 			Vector3.UP
 		)
 
+	if not detailed:
+		return
 	# kerbs + sidewalks (city) or gravel shoulders (rural / desert)
 	var city_road := segment.type == RoadNetwork.RoadType.STREET or segment.type == RoadNetwork.RoadType.AVENUE
 	var service_road := segment.type == RoadNetwork.RoadType.SERVICE

@@ -6,16 +6,26 @@ extends TestCase
 
 func test_mesh_builder_creates_surfaces_per_material() -> void:
 	var builder := MeshBuilder.new()
-	builder.add_quad("surface_grass", Vector3(0, 0, 0), Vector3(4, 0, 0), Vector3(4, 0, 4), Vector3(0, 0, 4))
-	builder.add_box("building_wall_a", Transform3D(Basis(), Vector3.ZERO), Vector3(1, 1, 1))
+	builder.add_quad("grass", Vector3(0, 0, 0), Vector3(4, 0, 0), Vector3(4, 0, 4), Vector3(0, 0, 4))
+	builder.add_box("concrete_wall", Transform3D(Basis(), Vector3.ZERO), Vector3(1, 1, 1))
 	var mesh := builder.commit()
 	assert_ne(mesh, null, "меш собран")
 	assert_gt(float((mesh as ArrayMesh).get_surface_count()), 0.0, "есть хотя бы одна поверхность")
 
 
+func test_mesh_builder_falls_back_on_an_unknown_material() -> void:
+	# Неизвестное имя материала не должно ломать сборку меша: библиотека
+	# подставляет бетон и предупреждает (имя ниже намеренно ненастоящее).
+	var builder := MeshBuilder.new()
+	builder.add_box("__material_that_does_not_exist__", Transform3D(Basis(), Vector3.ZERO), Vector3.ONE)
+	var mesh := builder.commit()
+	assert_ne(mesh, null, "меш с неизвестным материалом всё равно собирается")
+	assert_eq((mesh as ArrayMesh).get_surface_count(), 1, "поверхность создана с запасным материалом")
+
+
 func test_mesh_builder_vertex_and_index_counts_match_the_shapes() -> void:
 	var builder := MeshBuilder.new()
-	builder.add_quad("surface_grass", Vector3.ZERO, Vector3(1, 0, 0), Vector3(1, 0, 1), Vector3(0, 0, 1))
+	builder.add_quad("grass", Vector3.ZERO, Vector3(1, 0, 0), Vector3(1, 0, 1), Vector3(0, 0, 1))
 	var mesh := builder.commit()
 	var arrays: Array = (mesh as ArrayMesh).surface_get_arrays(0)
 	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
@@ -31,7 +41,7 @@ func test_mesh_builder_vertex_and_index_counts_match_the_shapes() -> void:
 
 func test_mesh_builder_box_is_closed() -> void:
 	var builder := MeshBuilder.new()
-	builder.add_box("building_wall_b", Transform3D(Basis(), Vector3(0, 1.5, 0)), Vector3(2, 3, 4))
+	builder.add_box("facade_brick_a", Transform3D(Basis(), Vector3(0, 1.5, 0)), Vector3(2, 3, 4))
 	var mesh := builder.commit()
 	var arrays: Array = (mesh as ArrayMesh).surface_get_arrays(0)
 	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
@@ -44,9 +54,9 @@ func test_mesh_builder_box_is_closed() -> void:
 
 func test_append_builder_merges_geometry() -> void:
 	var a := MeshBuilder.new()
-	a.add_quad("surface_grass", Vector3.ZERO, Vector3(1, 0, 0), Vector3(1, 0, 1), Vector3(0, 0, 1))
+	a.add_quad("grass", Vector3.ZERO, Vector3(1, 0, 0), Vector3(1, 0, 1), Vector3(0, 0, 1))
 	var b := MeshBuilder.new()
-	b.add_quad("surface_grass", Vector3(2, 0, 0), Vector3(3, 0, 0), Vector3(3, 0, 1), Vector3(2, 0, 1))
+	b.add_quad("grass", Vector3(2, 0, 0), Vector3(3, 0, 0), Vector3(3, 0, 1), Vector3(2, 0, 1))
 	a.append_builder(b)
 	var mesh := a.commit()
 	var arrays: Array = (mesh as ArrayMesh).surface_get_arrays(0)

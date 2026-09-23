@@ -48,7 +48,7 @@ func build_chunk(
 			var block := _block_rect(i, j)
 			if not rect.intersects(block, true):
 				continue
-			buildings += _build_block(builder, block, i, j, tier, colliders)
+			buildings += _build_block(builder, block, i, j, tier, colliders, rect)
 	return buildings
 
 
@@ -84,13 +84,20 @@ func _downtown_factor(center: Vector2) -> float:
 	return clampf(1.0 - distance / maxf(network.city_half_extent, 1.0), 0.0, 1.0)
 
 
+## rect - прямоугольник чанка, который строит этот блок.  Блок размером ~115 м
+## при шаге сетки 145 м пересекается сразу с несколькими чанками по 192 м, и
+## раньше каждый из них строил весь блок целиком: одни и те же здания попадали
+## в 2-4 чанка (вчетверо больше треугольников плюс мерцание совпадающих стен).
+## Теперь каждое здание строит ровно тот чанк, внутри которого лежит его центр,
+## а поверхность двора - тот, внутри которого лежит центр блока.
 func _build_block(
 	builder: MeshBuilder,
 	block: Rect2,
 	i: int,
 	j: int,
 	tier: int,
-	colliders: Array
+	colliders: Array,
+	rect: Rect2
 ) -> int:
 	var rng := MathUtils.rng_for(Vector2i(i * 73856093, j * 19349663), 991)
 	var center := block.get_center()
@@ -120,8 +127,13 @@ func _build_block(
 		elif roll > 0.88:
 			lot = "park"
 
-	# --- block surface (the ground floor of every lot)
-	_add_lot_surface(builder, block, lot, tier, rng, height_reference)
+	# --- block surface (the ground floor of every lot): строится один раз, тем
+	# чанком, который владеет центром блока
+	var owns_block := rect.grow(0.5).has_point(block.get_center())
+	if owns_block:
+		_add_lot_surface(builder, block, lot, tier, rng, height_reference)
+	if not owns_block:
+		return 0
 
 	if lot == "parking":
 		_add_parking_lot(builder, block, tier, rng, colliders)
@@ -177,6 +189,10 @@ func _build_block(
 			var front_center := edge_start + direction * (along + lot_width * 0.5)
 			var inward := -normal
 			var building_center := front_center + inward * (depth * 0.5 + 1.2)
+			if not rect.grow(0.5).has_point(building_center):
+				# здание принадлежит соседнему чанку - он его и построит
+				along += lot_width + rng.randf_range(0.6, 2.4)
+				continue
 			var yaw := atan2(normal.x, normal.y)
 			var height := rng.randf_range(min_height, max_height)
 			if rng.randf() < 0.12:
@@ -221,7 +237,8 @@ func _place_building(builder: MeshBuilder, context: Dictionary, colliders: Array
 		)
 		return 1
 	if tier == 1:
-		BuildingFactory.build_block(builder, origin, yaw, width, depth, height, rng, style)
+		# средний LOD: упрощённый дом (см. BuildingFactory.build_simple_block)
+		BuildingFactory.build_simple_block(builder, origin, yaw, width, depth, height, rng, style)
 		colliders.append({
 			"shape": "box",
 			"transform": BuildingFactory._t(origin + Vector3(0.0, height * 0.5, 0.0), yaw),

@@ -98,6 +98,13 @@ jobs:
           timeout 900 ~/godot-bin/Godot_v${GODOT_RELEASE}_linux.x86_64 --headless --path . \
             res://tests/test_runner.tscn 2>&1 | tee /tmp/tests.log
           grep -E "Файлов тестов|TESTS (PASSED|FAILED)" /tmp/tests.log
+          # Ошибка скрипта внутри теста обрывает проверку на середине, а тест
+          # при этом печатает "ok": лог обязан быть чистым.
+          if grep -q "SCRIPT ERROR" /tmp/tests.log; then
+            grep -A 3 "SCRIPT ERROR" /tmp/tests.log
+            echo "::error::ошибка скрипта во время тестов — часть проверок не выполнилась"
+            exit 1
+          fi
           # A runner with zero loaded files prints "TESTS PASSED" too, so the
           # number of files is asserted as well.
           if ! grep -qE "Файлов тестов: ([1-9][0-9]*)" /tmp/tests.log; then

@@ -24,10 +24,7 @@ func test_chunk_has_layered_geometry_and_colliders() -> void:
 	var triangle_total := 0
 	for mesh in meshes:
 		if mesh is ArrayMesh:
-			for surface in range((mesh as ArrayMesh).get_surface_count()):
-				var arrays: Array = (mesh as ArrayMesh).surface_get_arrays(surface)
-				var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
-				triangle_total += int(indices.size() / 3.0)
+			triangle_total += _triangle_count(mesh as ArrayMesh)
 	assert_gt(float(triangle_total), 500.0, "в чанке сотни треугольников (не пустое поле)")
 	var colliders: Array = result.get("colliders", [])
 	assert_gt(float(colliders.size()), 0.0, "у чанка есть коллайдеры")
@@ -80,19 +77,53 @@ func test_neighbouring_chunks_do_not_seam() -> void:
 	assert_eq(mismatches, 0, "на границе чанков нет разрывов высоты")
 
 
+## Бюджет треугольников на чанк.  Ближний уровень видит игрок вплотную (он же
+## несёт физику), и цена чанка здесь ограничена сверху: раньше одни и те же
+## здания попадали сразу в 2-4 соседних чанка (блок 115 м при шаге сетки 145 м
+## и чанке 192 м), и чанк стоил больше ста тысяч треугольников.
 func test_triangle_budget_per_chunk_is_mobile_friendly() -> void:
 	var worst := 0
 	for cell in [Vector2i(10, 10), Vector2i(9, 9), Vector2i(11, 10), Vector2i(5, 5)]:
 		var result := generator.generate_chunk(cell, WorldGenerator.TIER_NEAR)
 		var triangles := 0
+		var layer_counts: Array[int] = []
 		for mesh in result["meshes"]:
+			var layer_triangles := 0
 			if mesh is ArrayMesh:
-				for surface in range((mesh as ArrayMesh).get_surface_count()):
-					var indices: PackedInt32Array = (mesh as ArrayMesh).surface_get_arrays(surface)[Mesh.ARRAY_INDEX]
-					triangles += int(indices.size() / 3.0)
+				layer_triangles = _triangle_count(mesh as ArrayMesh)
+			layer_counts.append(layer_triangles)
+			triangles += layer_triangles
 		worst = maxi(worst, triangles)
+		if triangles > 0:
+			print("       чанк %s: всего %d треугольников, по слоям %s" % [
+				str(cell), triangles, str(layer_counts)])
 	assert_lt(float(worst), 60000.0, "чанк near-LOD укладывается в мобильный бюджет треугольников")
 	print("       (самый тяжёлый чанк near-LOD: %d треугольников)" % worst)
+
+
+## Настоящая лестница LOD: средний уровень должен быть заметно дешевле ближнего,
+## дальний - среднего.  До этой проверки средний уровень строил почти полную
+## детализацию зданий и обходился дороже ближнего, то есть LOD не экономил.
+func test_lod_levels_actually_reduce_the_geometry() -> void:
+	var cell := Vector2i(10, 10)  # плотная городская застройка
+	var near := _chunk_triangles(cell, WorldGenerator.TIER_NEAR)
+	var mid := _chunk_triangles(cell, WorldGenerator.TIER_MID)
+	var far := _chunk_triangles(cell, WorldGenerator.TIER_FAR)
+	print("       лестница LOD чанка %s: near %d, mid %d, far %d треугольников" % [
+		str(cell), near, mid, far])
+	assert_lt(float(mid), 25000.0, "средний LOD укладывается в бюджет (упрощённые дома, полотно без бордюров)")
+	assert_lt(float(far), 8000.0, "дальний LOD укладывается в бюджет (одна коробка на дом)")
+	assert_lt(float(mid), float(near) * 0.6, "средний LOD дешевле ближнего минимум на 40%")
+	assert_lt(float(far), float(mid) * 0.5, "дальний LOD дешевле среднего минимум в два раза")
+
+
+func _chunk_triangles(cell: Vector2i, tier: int) -> int:
+	var result := generator.generate_chunk(cell, tier)
+	var total := 0
+	for mesh in result["meshes"]:
+		if mesh is ArrayMesh:
+			total += _triangle_count(mesh as ArrayMesh)
+	return total
 
 
 func test_water_mesh_is_generated_once_for_the_whole_world() -> void:
@@ -109,3 +140,20 @@ func test_water_mesh_is_generated_once_for_the_whole_world() -> void:
 	for vertex in vertices:
 		span_x = maxf(span_x, absf(vertex.x))
 	assert_gt(span_x * 2.0, config.world_size_m * 0.95, "вода покрывает весь мир")
+
+
+## MeshBuilder собирает меши без индексации, поэтому треугольники считаются по
+## вершинам (шесть вершин на квад).  Раньше здесь безусловно читался массив
+## ARRAY_INDEX: у неиндексированного меша он равен null, счётчик молча оставался
+## нулевым, и тест "проходил", ничего не проверив.
+func _triangle_count(mesh: ArrayMesh) -> int:
+	var total := 0
+	for surface in range(mesh.get_surface_count()):
+		var arrays: Array = mesh.surface_get_arrays(surface)
+		var indices: Variant = arrays[Mesh.ARRAY_INDEX]
+		if indices != null and (indices as PackedInt32Array).size() > 0:
+			total += int((indices as PackedInt32Array).size() / 3)
+		else:
+			var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+			total += int(vertices.size() / 3)
+	return total
