@@ -125,12 +125,19 @@ jobs:
           timeout 1200 ~/godot-bin/Godot_v${GODOT_RELEASE}_linux.x86_64 --headless --path . \
             res://tools/smoke_run.tscn 2>&1 | tee /tmp/smoke.log
           if grep -q "SCRIPT ERROR" /tmp/smoke.log; then
+            DETAILS=$(grep -A 2 "SCRIPT ERROR" /tmp/smoke.log | head -12 | tr '\n' ';')
+            echo "::error::ошибка скрипта в смоуке: $DETAILS"
             grep -A 3 "SCRIPT ERROR" /tmp/smoke.log
             exit 1
           fi
           grep -E "проверок .* неудачных|SMOKE (PASSED|FAILED)" /tmp/smoke.log
           if ! grep -q "SMOKE PASSED" /tmp/smoke.log; then
-            echo "::error::смоук-тест собранной игры не прошёл"
+            # Диагностика для разбора неудачи: строки FAIL и последние строки
+            # лога попадают в аннотацию шага, потому что сам лог CI из внешней
+            # сети бывает недоступен.
+            DETAILS=$(grep -E "FAIL|SCRIPT ERROR|мир собран" /tmp/smoke.log | head -12 | tr '\n' ';')
+            echo "::error::смоук-тест собранной игры не прошёл: $DETAILS"
+            tail -15 /tmp/smoke.log
             exit 1
           fi
 
